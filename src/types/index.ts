@@ -12,6 +12,8 @@ export interface Turn {
     element: HTMLElement;
     text: string;
     headings: Heading[];
+    contextLabel?: string; // Provider context, e.g. a scheduled task name
+    timeLabel?: string; // Provider-rendered timestamp associated with this turn
 }
 
 export interface Provider {

@@ -6,7 +6,9 @@ export type CapturedTurn = {
 };
 
 export type ExportBlock = {
-    prompt: string;
+    kind?: 'exchange' | 'assistant-initiated';
+    title?: string;
+    prompt?: string;
     answer?: string;
     headings?: string[];
 };

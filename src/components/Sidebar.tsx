@@ -595,9 +595,31 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         return compact || turn.text || '';
     }, [copyWithMarkdown]);
 
+    const getAssistantInitiatedTitle = useCallback((turn: Turn) => {
+        const timeLabel = turn.timeLabel?.trim();
+        const contextLabel = turn.contextLabel?.trim();
+        if (timeLabel && contextLabel) return `${timeLabel} · ${contextLabel}`;
+        if (contextLabel) return contextLabel;
+
+        const firstHeading = turn.headings.find((heading) =>
+            !heading.isPlaceholder && heading.innerText.trim().length > 0
+        );
+        if (firstHeading) {
+            const headingText = firstHeading.innerText.trim();
+            return timeLabel ? `${timeLabel} · ${headingText}` : headingText;
+        }
+
+        const clean = stripMarkdown(turn.text || '').replace(/\s+/g, ' ').trim();
+        if (!clean) return timeLabel || 'Assistant update';
+        const summary = clean.length > 100 ? `${clean.slice(0, 100)}…` : clean;
+        return timeLabel ? `${timeLabel} · ${summary}` : summary;
+    }, []);
+
     type Block = {
         key: string;
-        prompt: Turn;
+        kind: 'exchange' | 'assistant-initiated';
+        title: string;
+        prompt?: Turn;
         answer?: Turn;
         headings: Turn['headings'];
     };
@@ -606,18 +628,33 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         const list: Block[] = [];
         for (let i = 0; i < turns.length; i++) {
             const turn = turns[i];
-            if (turn.role !== 'user') continue;
-            const next = turns[i + 1];
-            const answer = next && next.role === 'assistant' ? next : undefined;
+            if (turn.role === 'user') {
+                const next = turns[i + 1];
+                const answer = next && next.role === 'assistant' && !next.contextLabel
+                    ? next
+                    : undefined;
+                list.push({
+                    key: `block-${turn.id}`,
+                    kind: 'exchange',
+                    title: turn.text || '…',
+                    prompt: turn,
+                    answer,
+                    headings: answer?.headings || [],
+                });
+                if (answer) i += 1;
+                continue;
+            }
+
             list.push({
                 key: `block-${turn.id}`,
-                prompt: turn,
-                answer,
-                headings: answer?.headings || [],
+                kind: 'assistant-initiated',
+                title: getAssistantInitiatedTitle(turn),
+                answer: turn,
+                headings: turn.headings || [],
             });
         }
         return list;
-    }, [turns]);
+    }, [getAssistantInitiatedTitle, turns]);
 
     const normalizedSearch = search.trim().toLowerCase();
 
@@ -625,11 +662,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         const term = search.toLowerCase().trim();
         const showHeadings = viewLevel === 2;
         return blocks.filter((block) => {
-            const promptText = (block.prompt.text || '').toLowerCase();
+            const titleText = block.title.toLowerCase();
+            const promptText = (block.prompt?.text || '').toLowerCase();
             const answerText = (block.answer?.text || '').toLowerCase();
             const headingsText = block.headings.map((h) => h.innerText.toLowerCase()).join(' ');
             if (!term) return true;
             return (
+                titleText.includes(term) ||
                 promptText.includes(term) ||
                 answerText.includes(term) ||
                 (showHeadings && headingsText.includes(term))
@@ -674,16 +713,18 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const getCurrentExportBlocks = useCallback((): ExportBlock[] => {
         return blocks.map((block) => {
-            const promptText = block.prompt.element
+            const promptText = block.prompt?.element
                 ? serializeNodeToMarkdown(block.prompt.element)
-                : (block.prompt.text || '');
+                : (block.prompt?.text || '');
 
             const answerText = block.answer?.element
                 ? serializeNodeToMarkdown(block.answer.element)
                 : (block.answer?.text || '');
 
             return {
-                prompt: promptText.trim(),
+                kind: block.kind,
+                title: block.title,
+                prompt: promptText.trim() || undefined,
                 answer: answerText.trim(),
                 headings: block.headings.map((h) => h.innerText),
             };
@@ -700,21 +741,27 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
             if (turn.role === 'user') {
                 if (pendingPrompt) {
-                    result.push({ prompt: pendingPrompt });
+                    result.push({ kind: 'exchange', prompt: pendingPrompt });
                 }
                 pendingPrompt = text;
             } else {
                 if (pendingPrompt !== null) {
-                    result.push({ prompt: pendingPrompt, answer: text });
+                    result.push({ kind: 'exchange', prompt: pendingPrompt, answer: text });
                     pendingPrompt = null;
                 } else {
-                    result.push({ prompt: 'User', answer: text });
+                    const firstHeading = turn.headings?.find((heading) => heading.trim().length > 0);
+                    result.push({
+                        kind: 'assistant-initiated',
+                        title: firstHeading || snippet(text, 100),
+                        answer: text,
+                        headings: turn.headings,
+                    });
                 }
             }
         });
 
         if (pendingPrompt) {
-            result.push({ prompt: pendingPrompt });
+            result.push({ kind: 'exchange', prompt: pendingPrompt });
         }
 
         return result;
@@ -734,11 +781,16 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             lines.push(`# Chat Export (${providerName}) - ${new Date().toLocaleString()}`, '');
             turns.forEach((block, idx) => {
                 lines.push(`## Turn ${idx + 1}`, '');
-                lines.push('**User**');
-                lines.push(block.prompt || '…', '');
+                if (block.kind === 'assistant-initiated' && block.title) {
+                    lines.push(`*${block.title}*`, '');
+                }
+                if (block.prompt) {
+                    lines.push('**User**');
+                    lines.push(block.prompt, '');
+                }
                 if (block.answer) {
                     lines.push('**Assistant**');
-                    lines.push(block.answer || '…', '');
+                    lines.push(block.answer, '');
                 }
                 lines.push('---', '');
             });
@@ -750,10 +802,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             const lines: string[] = [];
             lines.push(`CHAT EXPORT (${providerName})`, `Exported: ${new Date().toLocaleString()}`, '', '='.repeat(60), '');
             turns.forEach((block, idx) => {
-                const promptPlain = stripMarkdown(block.prompt);
+                const promptPlain = stripMarkdown(block.prompt || '');
                 const answerPlain = stripMarkdown(block.answer || '');
 
-                lines.push(`[${idx + 1}] User:`, promptPlain || '…', '');
+                lines.push(`[${idx + 1}]${block.title ? ` ${block.title}` : ''}`, '');
+                if (block.prompt) {
+                    lines.push('User:', promptPlain || '…', '');
+                }
                 if (block.answer) {
                     lines.push('Assistant:', answerPlain || '…', '');
                 }
@@ -769,7 +824,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 provider: providerName,
                 url: window.location.href,
                 turns: turns.map((block) => ({
-                    prompt: block.prompt,
+                    kind: block.kind || 'exchange',
+                    title: block.title || '',
+                    prompt: block.prompt || '',
                     response: block.answer || '',
                     headings: block.headings || [],
                 })),
@@ -780,7 +837,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
         if (format === 'pdf') {
             const renderedTurns = await Promise.all(turns.map(async (block) => ({
-                promptHtml: await renderMarkdownToHtml(block.prompt || '…'),
+                kind: block.kind || 'exchange',
+                titleHtml: block.title ? DOMPurify.sanitize(block.title) : '',
+                promptHtml: await renderMarkdownToHtml(block.prompt || ''),
                 answerHtml: await renderMarkdownToHtml(block.answer || '…')
             })));
 
@@ -797,10 +856,14 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     .map(
                         (block) => `
                     <div class="turn">
-                      <div class="content-section">
+                      ${block.kind === 'assistant-initiated' && block.titleHtml
+                                ? `<div class="section-label">${block.titleHtml}</div>`
+                                : ''
+                            }
+                      ${block.promptHtml ? `<div class="content-section">
                         <div class="section-label">You</div>
                         <div class="prompt">${block.promptHtml}</div>
-                      </div>
+                      </div>` : ''}
                       ${block.answerHtml
                                 ? `<div class="content-section">
                         <div class="section-label">Assistant</div>
@@ -826,10 +889,10 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             const MAX_WAIT = 2500; // Max wait time per block
 
             while (Date.now() - start < MAX_WAIT) {
-                const promptEl = block.prompt.element?.querySelector('[data-message-author-role="user"]');
+                const promptEl = block.prompt?.element?.querySelector('[data-message-author-role="user"]');
                 const answerEl = block.answer?.element?.querySelector('[data-message-author-role="assistant"]');
 
-                const hasPrompt = !block.prompt.element || (promptEl as HTMLElement)?.innerText?.trim().length > 0;
+                const hasPrompt = !block.prompt || !block.prompt.element || (promptEl as HTMLElement)?.innerText?.trim().length > 0;
                 const hasAnswer = !block.answer?.element || (answerEl as HTMLElement)?.innerText?.trim().length > 0;
 
                 if (hasPrompt && hasAnswer) {
@@ -963,15 +1026,15 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 subText.textContent = `~${estimatedSeconds}s`;
                 progressBar.style.width = `${Math.round(((i + 1) / totalBlocks) * 100)}%`;
 
-                const targetElement = block.prompt.element || block.answer?.element;
+                const targetElement = block.prompt?.element || block.answer?.element;
                 if (targetElement) {
                     scrollToElement(targetElement);
                     await waitForHydration(block);
                 }
 
                 // Use specific selectors to avoid capturing role headers
-                const promptEl = block.prompt.element?.querySelector('[data-message-author-role="user"]');
-                const promptText = (promptEl as HTMLElement)?.innerText?.trim() || block.prompt.text || '';
+                const promptEl = block.prompt?.element?.querySelector('[data-message-author-role="user"]');
+                const promptText = (promptEl as HTMLElement)?.innerText?.trim() || block.prompt?.text || '';
 
                 const answerEl = block.answer?.element?.querySelector('[data-message-author-role="assistant"]');
                 const answerText = (answerEl as HTMLElement)?.innerText?.trim() || block.answer?.text || '';
@@ -982,7 +1045,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 const answerMarkdown = answerEl ? serializeNodeToMarkdown(answerEl) : answerText;
 
                 exportBlocks.push({
-                    prompt: promptMarkdown || promptText,
+                    kind: block.kind,
+                    title: block.title,
+                    prompt: promptMarkdown || promptText || undefined,
                     answer: answerMarkdown || answerText,
                     headings,
                 });
@@ -1108,7 +1173,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         if (visibleTurnIndex >= 0) {
                             const turn = turns[visibleTurnIndex];
                             const itemIndex = focusableItems.findIndex(item =>
-                                item.kind === 'block' && item.block.prompt.id === turn.id
+                                item.kind === 'block' && (
+                                    item.block.prompt?.id === turn.id || item.block.answer?.id === turn.id
+                                )
                             );
 
                             if (itemIndex >= 0 && itemIndex !== focusedIndex) {
@@ -1135,7 +1202,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             if (visibleTurnIndex >= 0) {
                 const turn = turns[visibleTurnIndex];
                 const itemIndex = focusableItems.findIndex(item =>
-                    item.kind === 'block' && item.block.prompt.id === turn.id
+                    item.kind === 'block' && (
+                        item.block.prompt?.id === turn.id || item.block.answer?.id === turn.id
+                    )
                 );
                 if (itemIndex >= 0) {
                     setFocusedIndex(itemIndex);
@@ -1273,12 +1342,15 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const handleCopyFullChat = useCallback(() => {
         const lines: string[] = [];
         blocks.forEach((block) => {
-            const promptText = getTurnCopyText(block.prompt);
-            lines.push(`User: ${promptText}`, '');
+            if (block.prompt) {
+                const promptText = getTurnCopyText(block.prompt);
+                lines.push(`User: ${promptText}`, '');
+            }
             if (block.answer) {
                 const answerText = getTurnCopyText(block.answer);
-                lines.push(`Assistant: ${answerText}`, '', '---', '');
+                lines.push(`Assistant: ${answerText}`, '');
             }
+            lines.push('---', '');
         });
         const fullText = lines.join('\n');
         copyToClipboard(fullText);
@@ -1373,7 +1445,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         let textToCopy = '';
                         let toastText = '';
 
-                        if (lowerKey === 'z' && block.answer) {
+                        if (lowerKey === 'z' && block.prompt && block.answer) {
                             const promptText = getTurnCopyText(block.prompt);
                             const answerText = getTurnCopyText(block.answer);
                             textToCopy = `Q: ${promptText}\n\nA: ${answerText}`;
@@ -1381,7 +1453,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         } else if (lowerKey === 'c' && block.answer) {
                             textToCopy = getTurnCopyText(block.answer);
                             toastText = copyWithMarkdown ? 'Response copied (markdown)' : 'Response copied!';
-                        } else if (lowerKey === 'x') {
+                        } else if (lowerKey === 'x' && block.prompt) {
                             textToCopy = getTurnCopyText(block.prompt);
                             toastText = copyWithMarkdown ? 'Prompt copied (markdown)' : 'Prompt copied!';
                         }
@@ -1444,8 +1516,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 if (item) {
                     if (item.kind === 'heading' && item.heading?.element) {
                         scrollToElement(item.heading.element);
-                    } else if (item.kind === 'block' && item.block.prompt.element) {
-                        scrollToElement(item.block.prompt.element);
+                    } else if (item.kind === 'block') {
+                        const target = item.block.prompt?.element || item.block.answer?.element;
+                        if (target) scrollToElement(target);
                     } else if (item.kind === 'command' && item.command === 'export') {
                         startExport();
                         if (providerName === 'chatgpt') {
@@ -1562,9 +1635,12 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const renderContextMenu = () => {
         if (!contextMenu) return null;
         const { block } = contextMenu;
+        const hasPrompt = Boolean(block.prompt);
         const hasAnswer = Boolean(block.answer);
+        const hasQA = hasPrompt && hasAnswer;
 
         const onCopyPrompt = () => {
+            if (!block.prompt) return;
             copyToClipboard(getTurnCopyText(block.prompt));
             showToast(copyWithMarkdown ? 'Prompt copied (markdown)' : 'Prompt copied');
             setContextMenu(null);
@@ -1578,7 +1654,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         };
 
         const onCopyQA = () => {
-            if (!block.answer) return;
+            if (!block.prompt || !block.answer) return;
             const promptText = getTurnCopyText(block.prompt);
             const answerText = getTurnCopyText(block.answer);
             const text = `Q: ${promptText}\n\nA: ${answerText}`;
@@ -1600,11 +1676,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     <span className="scroll-pro-context-label">Copy response</span>
                     <span className="scroll-pro-context-kbd">⌘/Ctrl+C</span>
                 </button>
-                <button className="scroll-pro-context-item" onClick={onCopyQA} disabled={!hasAnswer}>
+                <button className="scroll-pro-context-item" onClick={onCopyQA} disabled={!hasQA}>
                     <span className="scroll-pro-context-label">Copy Q&A</span>
                     <span className="scroll-pro-context-kbd">⌘/Ctrl+Z</span>
                 </button>
-                <button className="scroll-pro-context-item" onClick={onCopyPrompt}>
+                <button className="scroll-pro-context-item" onClick={onCopyPrompt} disabled={!hasPrompt}>
                     <span className="scroll-pro-context-label">Copy prompt</span>
                     <span className="scroll-pro-context-kbd">⌘/Ctrl+X</span>
                 </button>
@@ -1702,12 +1778,15 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 action: () => {
                     const lines: string[] = [];
                     blocks.forEach((block) => {
-                        const promptText = block.prompt.text || '';
-                        lines.push(`User: ${promptText}`, '');
+                        if (block.prompt) {
+                            const promptText = block.prompt.text || '';
+                            lines.push(`User: ${promptText}`, '');
+                        }
                         if (block.answer) {
                             const answerText = block.answer.text || '';
-                            lines.push(`Assistant: ${answerText}`, '', '---', '');
+                            lines.push(`Assistant: ${answerText}`, '');
                         }
+                        lines.push('---', '');
                     });
                     copyToClipboard(lines.join('\n'));
                     showToast('Full chat copied (plain text)');
@@ -1719,16 +1798,19 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 action: () => {
                     const lines: string[] = [];
                     blocks.forEach((block) => {
-                        const promptText = block.prompt.element
-                            ? serializeNodeToMarkdown(block.prompt.element).replace(/\n{3,}/g, '\n\n').trim()
-                            : block.prompt.text || '';
-                        lines.push(`**User:** ${promptText}`, '');
+                        if (block.prompt) {
+                            const promptText = block.prompt.element
+                                ? serializeNodeToMarkdown(block.prompt.element).replace(/\n{3,}/g, '\n\n').trim()
+                                : block.prompt.text || '';
+                            lines.push(`**User:** ${promptText}`, '');
+                        }
                         if (block.answer) {
                             const answerText = block.answer.element
                                 ? serializeNodeToMarkdown(block.answer.element).replace(/\n{3,}/g, '\n\n').trim()
                                 : block.answer.text || '';
-                            lines.push(`**Assistant:** ${answerText}`, '', '---', '');
+                            lines.push(`**Assistant:** ${answerText}`, '');
                         }
+                        lines.push('---', '');
                     });
                     copyToClipboard(lines.join('\n'));
                     showToast('Full chat copied (markdown)');
@@ -1742,7 +1824,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         provider: providerName,
                         url: window.location.href,
                         turns: blocks.map((block) => ({
-                            prompt: block.prompt.text || '',
+                            kind: block.kind,
+                            title: block.title,
+                            prompt: block.prompt?.text || '',
                             response: block.answer?.text || '',
                         })),
                     };
@@ -2060,7 +2144,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     onClick={() => {
                                         if (contextMenu) return;
                                         if (focusIdx >= 0) setFocusedIndex(focusIdx);
-                                        scrollToElement(block.prompt.element || block.answer?.element);
+                                        const target = block.prompt?.element || block.answer?.element;
+                                        if (target) scrollToElement(target);
                                     }}
                                     onContextMenu={(e) => {
                                         e.preventDefault();
@@ -2076,7 +2161,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                 >
                                     <div className="scroll-pro-item-body">
                                         <p className="scroll-pro-item-title">
-                                            {block.prompt.text || '…'}
+                                            {block.title || '…'}
                                         </p>
                                         {viewLevel === 2 && block.answer && (
                                             <div className="scroll-pro-subheading-list">

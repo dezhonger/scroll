@@ -23,6 +23,8 @@ export const chatgpt: Provider = {
                 undefined; // Stable ID from ChatGPT
             let text = '';
             let headings: any[] = [];
+            let contextLabel: string | undefined;
+            let timeLabel: string | undefined;
 
             if (role === 'user') {
                 const textEl = article.querySelector('[data-message-author-role="user"]');
@@ -41,6 +43,16 @@ export const chatgpt: Provider = {
                 const contentEl = article.querySelector('[data-message-author-role="assistant"]');
                 if (contentEl) {
                     text = serializeNodeToMarkdown(contentEl) || (contentEl as HTMLElement).innerText || '';
+                    const taskTitleEl = article.querySelector<HTMLElement>(
+                        '[data-conversation-screenshot-content] > div > button > span.truncate'
+                    );
+                    contextLabel = taskTitleEl?.innerText?.trim() || undefined;
+
+                    const previousSibling = article.previousElementSibling;
+                    if (previousSibling?.matches('[role="separator"][aria-label]')) {
+                        timeLabel = previousSibling.getAttribute('aria-label')?.trim() || undefined;
+                    }
+
                     const headingElements = Array.from(contentEl.querySelectorAll('h1, h2, h3, h4'));
                     headings = headingElements.map((h, idx) => {
                         const innerText = (h as HTMLElement).innerText.trim();
@@ -59,7 +71,9 @@ export const chatgpt: Provider = {
                 role,
                 element: article as HTMLElement,
                 text,
-                headings
+                headings,
+                contextLabel,
+                timeLabel
             };
         });
     },
