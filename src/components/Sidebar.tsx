@@ -242,7 +242,7 @@ type SidebarProps = {
 };
 
 export default function Sidebar({ turns, providerName, container, isOpen, isPaused, onToggle }: SidebarProps) {
-    const [viewLevel, setViewLevel] = useState<1 | 2>(2); // 1=Prompts, 2=All
+    const [viewLevel, setViewLevel] = useState<1 | 2 | 3>(2); // 1=Prompts, 2=All, 3=Latest
     const [search, setSearch] = useState('');
     const [progress, setProgress] = useState(0);
     const [lineClamp, setLineClamp] = useState<number>(() => getLineClamp());
@@ -660,8 +660,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const filteredBlocks = useMemo(() => {
         const term = search.toLowerCase().trim();
-        const showHeadings = viewLevel === 2;
-        return blocks.filter((block) => {
+        const showHeadings = viewLevel !== 1;
+        const visibleBlocks = viewLevel === 3 ? blocks.slice(-1) : blocks;
+        return visibleBlocks.filter((block) => {
             const titleText = block.title.toLowerCase();
             const promptText = (block.prompt?.text || '').toLowerCase();
             const answerText = (block.answer?.text || '').toLowerCase();
@@ -682,7 +683,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         | { key: string; kind: 'command'; command: 'export' };
 
     const focusableItems: FocusItem[] = useMemo(() => {
-        const showHeadings = viewLevel === 2;
+        const showHeadings = viewLevel !== 1;
         const items: FocusItem[] = [];
 
         const showExport = normalizedSearch === '/export' || normalizedSearch === '/e' || normalizedSearch === '/ex';
@@ -1392,7 +1393,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             if (hasChord && e.code === 'Space') {
                 e.preventDefault();
                 e.stopPropagation();
-                setViewLevel((prev) => (prev === 1 ? 2 : 1));
+                setViewLevel((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
                 return;
             }
             if (hasChord && ['c', 'x', 'z', 'm', 'e', ';', "'"].includes(lowerKey)) {
@@ -1508,7 +1509,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             } else if (e.key === 'Tab' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 e.preventDefault();
                 e.stopPropagation();
-                setViewLevel(prev => prev === 1 ? 2 : 1);
+                setViewLevel(prev => prev === 1 ? 2 : prev === 2 ? 3 : 1);
             } else if (e.key === 'Enter') {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1980,7 +1981,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                 <span className="scroll-pro-help-label">Navigate</span>
                                 <div className="scroll-pro-help-row"><span className="scroll-pro-help-keys"><kbd>↑</kbd> <kbd>↓</kbd></span><span>Move between items</span></div>
                                 <div className="scroll-pro-help-row"><span className="scroll-pro-help-keys"><kbd>Enter</kbd></span><span>Scroll to item</span></div>
-                                <div className="scroll-pro-help-row"><span className="scroll-pro-help-keys"><kbd>Tab</kbd> <kbd>←</kbd> <kbd>→</kbd></span><span>Toggle Prompts / All</span></div>
+                                <div className="scroll-pro-help-row"><span className="scroll-pro-help-keys"><kbd>Tab</kbd> <kbd>←</kbd> <kbd>→</kbd></span><span>Cycle Prompts / All / Latest</span></div>
                             </div>
                             <div className="scroll-pro-help-section">
                                 <span className="scroll-pro-help-label">Copy &amp; export</span>
@@ -2015,6 +2016,14 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     title="Show all content"
                                 >
                                     All
+                                </button>
+                                <span aria-hidden="true" className="scroll-pro-tab-sep">•</span>
+                                <button
+                                    onClick={() => setViewLevel(3)}
+                                    className={`scroll-pro-tab ${viewLevel === 3 ? 'is-active' : ''}`}
+                                    title="Show latest turn only"
+                                >
+                                    Latest
                                 </button>
                             </div>
                             <div className="scroll-pro-actions" role="group" aria-label="Chat actions">
@@ -2163,7 +2172,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                         <p className="scroll-pro-item-title">
                                             {block.title || '…'}
                                         </p>
-                                        {viewLevel === 2 && block.answer && (
+                                        {viewLevel !== 1 && block.answer && (
                                             <div className="scroll-pro-subheading-list">
                                                 {block.headings.length > 0 ? (
                                                     block.headings.map((h, i) => {
