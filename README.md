@@ -35,7 +35,7 @@ Load `dist-firefox/` as a temporary add-on (`about:debugging` > This Firefox > L
 
 **Navigate** — A floating table of contents for every conversation. Click any prompt to jump to it instantly. Headings inside long responses are detected for section-level navigation.
 
-**Copy** — Copy individual prompts, responses, Q&A pairs, or the full chat. Toggle markdown mode for formatted output.
+**Copy** — Copy individual prompts, responses, response sections, Q&A pairs, or the full chat. Hover a response heading to copy that section, and toggle markdown mode for formatted output.
 
 **Export** — Export conversations to Markdown, PDF, plain text, or JSON.
 

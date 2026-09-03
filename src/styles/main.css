@@ -616,6 +616,13 @@
   padding-left: 0;
 }
 
+.scroll-pro-subheading-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
 .scroll-pro-subheading-fallback {
   color: var(--text-tertiary);
   font-size: 12px;
@@ -626,6 +633,8 @@
 }
 
 .scroll-pro-subheading {
+  flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   color: var(--text-tertiary);
@@ -649,6 +658,52 @@
   color: var(--text-primary);
   font-weight: 600;
   background: var(--bg-item-active);
+}
+
+.scroll-pro-section-copy-btn {
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.scroll-pro-section-copy-btn svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.scroll-pro-subheading-row:hover .scroll-pro-section-copy-btn,
+.scroll-pro-subheading-row.is-focused .scroll-pro-section-copy-btn,
+.scroll-pro-section-copy-btn:focus-visible,
+.scroll-pro-section-copy-btn.is-copied {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.scroll-pro-section-copy-btn:hover,
+.scroll-pro-section-copy-btn:focus-visible {
+  color: var(--text-primary);
+  background: var(--hover-overlay);
+}
+
+.scroll-pro-section-copy-btn.is-copied {
+  color: var(--text-primary);
 }
 
 .scroll-pro-overflow-tooltip {

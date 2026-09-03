@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEventHandler } from 'react';
-import { Turn } from '../types';
+import { Heading, Turn } from '../types';
 import type { CapturedTurn, ExportBlock } from '../types/messages';
 import { scrollToElement } from '../lib/scroll';
 import { chatgpt } from '../providers/chatgpt';
@@ -112,8 +112,11 @@ const TruncatedTitle = ({ text, onShowTooltip, onHideTooltip }: TruncatedTitlePr
 type TruncatedSubheadingProps = {
     text: string;
     className: string;
+    isFocused: boolean;
+    isCopied: boolean;
     buttonRef: (element: HTMLButtonElement | null) => void;
     onClick: MouseEventHandler<HTMLButtonElement>;
+    onCopy: MouseEventHandler<HTMLButtonElement>;
     onShowTooltip: (element: HTMLElement, text: string) => void;
     onHideTooltip: () => void;
 };
@@ -121,8 +124,11 @@ type TruncatedSubheadingProps = {
 const TruncatedSubheading = ({
     text,
     className,
+    isFocused,
+    isCopied,
     buttonRef,
     onClick,
+    onCopy,
     onShowTooltip,
     onHideTooltip,
 }: TruncatedSubheadingProps) => {
@@ -135,21 +141,41 @@ const TruncatedSubheading = ({
     };
 
     return (
-        <button
-            ref={(element) => {
-                elementRef.current = element;
-                buttonRef(element);
-            }}
-            className={className}
-            onClick={onClick}
-            data-truncated={isTruncated ? 'true' : undefined}
-            onMouseEnter={showTooltip}
-            onMouseLeave={onHideTooltip}
-            onFocus={showTooltip}
-            onBlur={onHideTooltip}
-        >
-            {text}
-        </button>
+        <div className={`scroll-pro-subheading-row ${isFocused ? 'is-focused' : ''}`}>
+            <button
+                ref={(element) => {
+                    elementRef.current = element;
+                    buttonRef(element);
+                }}
+                className={className}
+                onClick={onClick}
+                data-truncated={isTruncated ? 'true' : undefined}
+                onMouseEnter={showTooltip}
+                onMouseLeave={onHideTooltip}
+                onFocus={showTooltip}
+                onBlur={onHideTooltip}
+            >
+                {text}
+            </button>
+            <button
+                type="button"
+                className={`scroll-pro-section-copy-btn ${isCopied ? 'is-copied' : ''}`}
+                aria-label={`Copy section: ${text}`}
+                title="Copy this section"
+                onClick={onCopy}
+            >
+                {isCopied ? (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                ) : (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="9" width="11" height="11" rx="2" />
+                        <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" />
+                    </svg>
+                )}
+            </button>
+        </div>
     );
 };
 
@@ -320,15 +346,7 @@ const getLineClamp = () => {
     }
 };
 
-const copyToClipboard = (text: string) => {
-    if (!text) return;
-    if (navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).catch(err => {
-            console.error('Failed to copy text:', err);
-        });
-        return;
-    }
-
+const copyToClipboardFallback = (text: string) => {
     try {
         const textarea = document.createElement('textarea');
         textarea.value = text;
@@ -337,11 +355,126 @@ const copyToClipboard = (text: string) => {
         textarea.style.left = '-9999px';
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand('copy');
+        const copied = document.execCommand('copy');
         document.body.removeChild(textarea);
+        return copied;
     } catch (err) {
         console.error('Failed to copy text (fallback):', err);
+        return false;
     }
+};
+
+const copyToClipboard = async (text: string) => {
+    if (!text) return false;
+    if (navigator?.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (err) {
+            console.warn('Clipboard API failed, trying fallback:', err);
+        }
+    }
+
+    return copyToClipboardFallback(text);
+};
+
+const RESPONSE_HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6';
+const RESPONSE_CONTENT_SELECTOR = [
+    '[data-message-author-role="assistant"]',
+    '.row-start-2',
+    '.font-claude-response',
+    '[data-testid="assistant-response"]',
+    '[data-testid="assistant-message"]',
+    'message-content .markdown',
+    '.markdown',
+].join(', ');
+
+const getHeadingLevel = (heading: Heading) => {
+    const match = (heading.tagName || heading.element.tagName).match(/^H([1-6])$/i);
+    return match ? Number(match[1]) : 6;
+};
+
+const serializeNodeToPlainText = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+    if (!(node instanceof HTMLElement)) return '';
+    if (
+        node.getAttribute('aria-hidden') === 'true' ||
+        node.style.display === 'none' ||
+        node.style.visibility === 'hidden'
+    ) {
+        return '';
+    }
+
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'script' || tag === 'style' || tag === 'svg') return '';
+    if (tag === 'br') return '\n';
+    if (tag === 'pre') return `${(node.textContent || '').trim()}\n\n`;
+
+    if (tag === 'ul' || tag === 'ol') {
+        const items = Array.from(node.children)
+            .map((item, index) => {
+                const prefix = tag === 'ol' ? `${index + 1}. ` : '- ';
+                return `${prefix}${serializeNodeToPlainText(item).trim()}`;
+            })
+            .filter((item) => item.trim().length > 0)
+            .join('\n');
+        return items ? `${items}\n\n` : '';
+    }
+
+    const children = Array.from(node.childNodes).map(serializeNodeToPlainText).join('');
+    if (tag === 'li') return children.trim();
+    if (tag === 'td' || tag === 'th') return `${children.trim()}\t`;
+    if (tag === 'tr') return `${children.trimEnd()}\n`;
+    if (
+        tag === 'p' ||
+        tag === 'div' ||
+        tag === 'section' ||
+        tag === 'article' ||
+        tag === 'blockquote' ||
+        /^h[1-6]$/.test(tag)
+    ) {
+        return children.trim() ? `${children.trim()}\n\n` : '';
+    }
+    return children;
+};
+
+const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: boolean) => {
+    const headingElement = heading.element;
+    const contentRoot = headingElement.closest<HTMLElement>(RESPONSE_CONTENT_SELECTOR) || turn.element;
+    if (!contentRoot.contains(headingElement)) return '';
+
+    const responseHeadings = Array.from(
+        contentRoot.querySelectorAll<HTMLElement>(RESPONSE_HEADING_SELECTOR)
+    );
+    const currentIndex = responseHeadings.indexOf(headingElement);
+    if (currentIndex < 0) return '';
+
+    const currentLevel = getHeadingLevel(heading);
+    const nextBoundary = responseHeadings
+        .slice(currentIndex + 1)
+        .find((candidate) => {
+            const match = candidate.tagName.match(/^H([1-6])$/i);
+            const candidateLevel = match ? Number(match[1]) : 6;
+            return candidateLevel <= currentLevel;
+        });
+
+    const range = headingElement.ownerDocument.createRange();
+    range.setStartBefore(headingElement);
+    if (nextBoundary) {
+        range.setEndBefore(nextBoundary);
+    } else {
+        range.setEnd(contentRoot, contentRoot.childNodes.length);
+    }
+
+    const wrapper = headingElement.ownerDocument.createElement('div');
+    wrapper.appendChild(range.cloneContents());
+    const raw = withMarkdown
+        ? serializeNodeToMarkdown(wrapper)
+        : serializeNodeToPlainText(wrapper);
+    return raw
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 };
 
 type SidebarProps = {
@@ -378,6 +511,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const [copyFormatMenu, setCopyFormatMenu] = useState<{ x: number; y: number } | null>(null);
     const copyFormatMenuRef = useRef<HTMLDivElement | null>(null);
     const [copyWithMarkdown, setCopyWithMarkdown] = useState<boolean>(false);
+    const [copiedSectionKey, setCopiedSectionKey] = useState<string | null>(null);
     const [showUpdateBanner, setShowUpdateBanner] = useState(false);
     const [bannerDismissed, setBannerDismissed] = useState(true);
     const [showHelp, setShowHelp] = useState(false);
@@ -408,9 +542,16 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const userInteractionRef = useRef(false);
     const isHoveringSidebar = useRef(false);
     const isSmoothPursuit = useRef(false);
+    const copiedSectionTimerRef = useRef<number | null>(null);
 
     const turnsRef = useRef(turns);
     useEffect(() => { turnsRef.current = turns; }, [turns]);
+
+    useEffect(() => () => {
+        if (copiedSectionTimerRef.current !== null) {
+            window.clearTimeout(copiedSectionTimerRef.current);
+        }
+    }, []);
 
     const showOverflowTooltip = useCallback((element: HTMLElement, text: string) => {
         const rect = element.getBoundingClientRect();
@@ -733,6 +874,29 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         const compact = raw.replace(/\n{3,}/g, '\n\n').trim();
         return compact || turn.text || '';
     }, [copyWithMarkdown]);
+
+    const copyHeadingSection = useCallback(async (sectionKey: string, turn: Turn, heading: Heading) => {
+        const text = getHeadingSectionCopyText(turn, heading, copyWithMarkdown);
+        if (!text) {
+            showToast('Unable to copy this section', 'error');
+            return;
+        }
+
+        const copied = await copyToClipboard(text);
+        if (!copied) {
+            showToast('Unable to access the clipboard', 'error');
+            return;
+        }
+        setCopiedSectionKey(sectionKey);
+        if (copiedSectionTimerRef.current !== null) {
+            window.clearTimeout(copiedSectionTimerRef.current);
+        }
+        copiedSectionTimerRef.current = window.setTimeout(() => {
+            setCopiedSectionKey(null);
+            copiedSectionTimerRef.current = null;
+        }, 1400);
+        showToast(copyWithMarkdown ? 'Section copied (markdown)' : 'Section copied');
+    }, [copyWithMarkdown, showToast]);
 
     const getAssistantInitiatedTitle = useCallback((turn: Turn) => {
         const timeLabel = turn.timeLabel?.trim();
@@ -2323,6 +2487,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                             <TruncatedSubheading
                                                                 key={headingKey}
                                                                 text={h.innerText}
+                                                                isFocused={focusedIndex === headingFocusIndex}
+                                                                isCopied={copiedSectionKey === headingKey}
                                                                 buttonRef={(el) => {
                                                                     if (el) {
                                                                         itemRefs.current.set(headingKey, el);
@@ -2335,6 +2501,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                                     e.stopPropagation();
                                                                     if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
                                                                     scrollToElement(h.element);
+                                                                }}
+                                                                onCopy={(e) => {
+                                                                    e.preventDefault();
+                                                                    e.stopPropagation();
+                                                                    hideOverflowTooltip();
+                                                                    if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
+                                                                    copyHeadingSection(headingKey, block.answer!, h);
                                                                 }}
                                                                 onShowTooltip={showOverflowTooltip}
                                                                 onHideTooltip={hideOverflowTooltip}
