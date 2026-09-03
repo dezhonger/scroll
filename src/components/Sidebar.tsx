@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEventHandler } from 'react';
 import { Turn } from '../types';
 import type { CapturedTurn, ExportBlock } from '../types/messages';
 import { scrollToElement } from '../lib/scroll';
@@ -39,6 +39,118 @@ type SidebarPosition = {
 type SidebarOpenDirection = {
     x: 'left' | 'right';
     y: 'up' | 'down';
+};
+
+type TruncatedTitleProps = {
+    text: string;
+    onShowTooltip: (element: HTMLElement, text: string) => void;
+    onHideTooltip: () => void;
+};
+
+type OverflowTooltip = {
+    text: string;
+    left: number;
+    top: number;
+    placement: 'above' | 'below';
+};
+
+const useOverflowTitle = <T extends HTMLElement>(text: string) => {
+    const elementRef = useRef<T | null>(null);
+    const [isTruncated, setIsTruncated] = useState(false);
+
+    useLayoutEffect(() => {
+        const element = elementRef.current;
+        if (!element) return;
+
+        const measure = () => {
+            const hasOverflow =
+                element.scrollWidth - element.clientWidth > 1 ||
+                element.scrollHeight - element.clientHeight > 1;
+            setIsTruncated(hasOverflow);
+        };
+
+        measure();
+        const frameId = window.requestAnimationFrame(measure);
+        const resizeObserver = typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver(measure)
+            : null;
+        resizeObserver?.observe(element);
+        window.addEventListener('resize', measure);
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+            resizeObserver?.disconnect();
+            window.removeEventListener('resize', measure);
+        };
+    }, [text]);
+
+    return { elementRef, isTruncated };
+};
+
+const TruncatedTitle = ({ text, onShowTooltip, onHideTooltip }: TruncatedTitleProps) => {
+    const { elementRef, isTruncated } = useOverflowTitle<HTMLParagraphElement>(text);
+
+    const showTooltip = () => {
+        if (isTruncated && elementRef.current) {
+            onShowTooltip(elementRef.current, text);
+        }
+    };
+
+    return (
+        <p
+            ref={elementRef}
+            className="scroll-pro-item-title"
+            data-truncated={isTruncated ? 'true' : undefined}
+            onMouseEnter={showTooltip}
+            onMouseLeave={onHideTooltip}
+        >
+            {text}
+        </p>
+    );
+};
+
+type TruncatedSubheadingProps = {
+    text: string;
+    className: string;
+    buttonRef: (element: HTMLButtonElement | null) => void;
+    onClick: MouseEventHandler<HTMLButtonElement>;
+    onShowTooltip: (element: HTMLElement, text: string) => void;
+    onHideTooltip: () => void;
+};
+
+const TruncatedSubheading = ({
+    text,
+    className,
+    buttonRef,
+    onClick,
+    onShowTooltip,
+    onHideTooltip,
+}: TruncatedSubheadingProps) => {
+    const { elementRef, isTruncated } = useOverflowTitle<HTMLButtonElement>(text);
+
+    const showTooltip = () => {
+        if (isTruncated && elementRef.current) {
+            onShowTooltip(elementRef.current, text);
+        }
+    };
+
+    return (
+        <button
+            ref={(element) => {
+                elementRef.current = element;
+                buttonRef(element);
+            }}
+            className={className}
+            onClick={onClick}
+            data-truncated={isTruncated ? 'true' : undefined}
+            onMouseEnter={showTooltip}
+            onMouseLeave={onHideTooltip}
+            onFocus={showTooltip}
+            onBlur={onHideTooltip}
+        >
+            {text}
+        </button>
+    );
 };
 
 const clampNumber = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
@@ -242,8 +354,9 @@ type SidebarProps = {
 };
 
 export default function Sidebar({ turns, providerName, container, isOpen, isPaused, onToggle }: SidebarProps) {
-    const [viewLevel, setViewLevel] = useState<1 | 2 | 3>(2); // 1=Prompts, 2=All, 3=Latest
+    const [viewLevel, setViewLevel] = useState<1 | 2 | 3>(3); // 1=Prompts, 2=All, 3=Latest
     const [search, setSearch] = useState('');
+    const [overflowTooltip, setOverflowTooltip] = useState<OverflowTooltip | null>(null);
     const [progress, setProgress] = useState(0);
     const [lineClamp, setLineClamp] = useState<number>(() => getLineClamp());
     const [focusedIndex, setFocusedIndex] = useState<number>(-1);
@@ -298,6 +411,32 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const turnsRef = useRef(turns);
     useEffect(() => { turnsRef.current = turns; }, [turns]);
+
+    const showOverflowTooltip = useCallback((element: HTMLElement, text: string) => {
+        const rect = element.getBoundingClientRect();
+        const viewportPadding = 12;
+        const maxWidth = Math.min(420, window.innerWidth - viewportPadding * 2);
+        const left = clampNumber(
+            rect.left,
+            viewportPadding,
+            Math.max(viewportPadding, window.innerWidth - maxWidth - viewportPadding)
+        );
+        const placement = rect.bottom + 120 > window.innerHeight ? 'above' : 'below';
+        setOverflowTooltip({
+            text,
+            left,
+            top: placement === 'above' ? rect.top - 8 : rect.bottom + 8,
+            placement,
+        });
+    }, []);
+
+    const hideOverflowTooltip = useCallback(() => {
+        setOverflowTooltip(null);
+    }, []);
+
+    useEffect(() => {
+        setOverflowTooltip(null);
+    }, [isOpen, search, viewLevel]);
 
     useEffect(() => {
         try {
@@ -2095,7 +2234,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         </div>
                     </div>
 
-                    <div className="scroll-pro-sidebar-list">
+                    <div className="scroll-pro-sidebar-list" onScroll={hideOverflowTooltip}>
                         {(() => {
                             const term = search.trim().toLowerCase();
                             const showExport = term === '/export' || term === '/e' || term === '/ex';
@@ -2169,9 +2308,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     aria-selected={focusedIndex === focusIdx}
                                 >
                                     <div className="scroll-pro-item-body">
-                                        <p className="scroll-pro-item-title">
-                                            {block.title || '…'}
-                                        </p>
+                                        <TruncatedTitle
+                                            text={block.title || '…'}
+                                            onShowTooltip={showOverflowTooltip}
+                                            onHideTooltip={hideOverflowTooltip}
+                                        />
                                         {viewLevel !== 1 && block.answer && (
                                             <div className="scroll-pro-subheading-list">
                                                 {block.headings.length > 0 ? (
@@ -2179,9 +2320,10 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                         const headingKey = `${block.key}-heading-${i}`;
                                                         const headingFocusIndex = focusIndexByKey.get(headingKey) ?? -1;
                                                         return (
-                                                            <button
+                                                            <TruncatedSubheading
                                                                 key={headingKey}
-                                                                ref={(el) => {
+                                                                text={h.innerText}
+                                                                buttonRef={(el) => {
                                                                     if (el) {
                                                                         itemRefs.current.set(headingKey, el);
                                                                     } else {
@@ -2194,9 +2336,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                                     if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
                                                                     scrollToElement(h.element);
                                                                 }}
-                                                            >
-                                                                {h.innerText}
-                                                            </button>
+                                                                onShowTooltip={showOverflowTooltip}
+                                                                onHideTooltip={hideOverflowTooltip}
+                                                            />
                                                         );
                                                     })
                                                 ) : (
@@ -2235,6 +2377,15 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         )}
                     </div>
                     </>)}
+                </div>
+            )}
+            {isOpen && overflowTooltip && (
+                <div
+                    className={`scroll-pro-overflow-tooltip is-${overflowTooltip.placement}`}
+                    style={{ left: overflowTooltip.left, top: overflowTooltip.top }}
+                    role="tooltip"
+                >
+                    {overflowTooltip.text}
                 </div>
             )}
             {contextMenu && (
