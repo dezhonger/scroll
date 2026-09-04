@@ -149,6 +149,7 @@ const TruncatedSubheading = ({
                 }}
                 className={className}
                 onClick={onClick}
+                aria-current={isFocused ? 'location' : undefined}
                 data-truncated={isTruncated ? 'true' : undefined}
                 onMouseEnter={showTooltip}
                 onMouseLeave={onHideTooltip}
@@ -180,6 +181,10 @@ const TruncatedSubheading = ({
 };
 
 const clampNumber = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const getViewportReadingAnchor = () => (
+    Math.min(160, Math.max(96, window.innerHeight * 0.12))
+);
 
 const getSidebarBounds = () => {
     const minX = SIDEBAR_MARGIN;
@@ -489,6 +494,7 @@ type SidebarProps = {
 export default function Sidebar({ turns, providerName, container, isOpen, isPaused, onToggle }: SidebarProps) {
     const [viewLevel, setViewLevel] = useState<1 | 2 | 3>(3); // 1=Prompts, 2=All, 3=Latest
     const [search, setSearch] = useState('');
+    const [selectedLatestBlockKey, setSelectedLatestBlockKey] = useState<string | null>(null);
     const [overflowTooltip, setOverflowTooltip] = useState<OverflowTooltip | null>(null);
     const [progress, setProgress] = useState(0);
     const [lineClamp, setLineClamp] = useState<number>(() => getLineClamp());
@@ -523,6 +529,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const sidebarShellRef = useRef<HTMLDivElement | null>(null);
     const toggleButtonRef = useRef<HTMLButtonElement | null>(null);
+    const focusedIndexRef = useRef(focusedIndex);
     const sidebarPositionRef = useRef<SidebarPosition>(sidebarPosition);
     const dragPositionRef = useRef<SidebarPosition | null>(null);
     const dragOpenDirectionRef = useRef<SidebarOpenDirection | null>(null);
@@ -543,13 +550,22 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const isHoveringSidebar = useRef(false);
     const isSmoothPursuit = useRef(false);
     const copiedSectionTimerRef = useRef<number | null>(null);
+    const suppressLatestScrollSyncRef = useRef(false);
+    const latestScrollSyncTimerRef = useRef<number | null>(null);
+    const manualSidebarNavigationUntilRef = useRef(0);
+    const previousViewLevelRef = useRef(viewLevel);
+    const previousNewestBlockKeyRef = useRef<string | null>(null);
 
     const turnsRef = useRef(turns);
     useEffect(() => { turnsRef.current = turns; }, [turns]);
+    useEffect(() => { focusedIndexRef.current = focusedIndex; }, [focusedIndex]);
 
     useEffect(() => () => {
         if (copiedSectionTimerRef.current !== null) {
             window.clearTimeout(copiedSectionTimerRef.current);
+        }
+        if (latestScrollSyncTimerRef.current !== null) {
+            window.clearTimeout(latestScrollSyncTimerRef.current);
         }
     }, []);
 
@@ -937,7 +953,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     ? next
                     : undefined;
                 list.push({
-                    key: `block-${turn.id}`,
+                    key: `block-${turn.turnId || turn.id}`,
                     kind: 'exchange',
                     title: turn.text || '…',
                     prompt: turn,
@@ -949,7 +965,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             }
 
             list.push({
-                key: `block-${turn.id}`,
+                key: `block-${turn.turnId || turn.id}`,
                 kind: 'assistant-initiated',
                 title: getAssistantInitiatedTitle(turn),
                 answer: turn,
@@ -959,12 +975,99 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         return list;
     }, [getAssistantInitiatedTitle, turns]);
 
+    const latestBlockIndex = useMemo(() => {
+        if (blocks.length === 0) return -1;
+        if (!selectedLatestBlockKey) return blocks.length - 1;
+        return blocks.findIndex((block) => block.key === selectedLatestBlockKey);
+    }, [blocks, selectedLatestBlockKey]);
+
+    const latestBlock = latestBlockIndex >= 0 ? blocks[latestBlockIndex] : undefined;
+
+    const findBlockIndexForTurn = useCallback((turn: Turn) => {
+        const turnKey = turn.turnId || turn.id;
+        return blocks.findIndex((block) => {
+            const promptKey = block.prompt ? (block.prompt.turnId || block.prompt.id) : null;
+            const answerKey = block.answer ? (block.answer.turnId || block.answer.id) : null;
+            return promptKey === turnKey || answerKey === turnKey;
+        });
+    }, [blocks]);
+
+    const scrollLatestBlockIntoView = useCallback((block: Block | undefined) => {
+        const target = block?.prompt?.element || block?.answer?.element;
+        if (!target || !target.isConnected) return;
+
+        suppressLatestScrollSyncRef.current = true;
+        if (latestScrollSyncTimerRef.current !== null) {
+            window.clearTimeout(latestScrollSyncTimerRef.current);
+        }
+        target.scrollIntoView({ behavior: 'auto', block: 'start' });
+        latestScrollSyncTimerRef.current = window.setTimeout(() => {
+            suppressLatestScrollSyncRef.current = false;
+            latestScrollSyncTimerRef.current = null;
+        }, 500);
+    }, []);
+
+    useEffect(() => {
+        const previousViewLevel = previousViewLevelRef.current;
+        previousViewLevelRef.current = viewLevel;
+        if (viewLevel !== 3 || previousViewLevel === 3) return;
+
+        setSelectedLatestBlockKey(null);
+        const newestBlock = blocks[blocks.length - 1];
+        scrollLatestBlockIntoView(newestBlock);
+    }, [blocks, scrollLatestBlockIntoView, viewLevel]);
+
+    useEffect(() => {
+        const newestBlock = blocks[blocks.length - 1];
+        const newestBlockKey = newestBlock?.key || null;
+        const previousNewestBlockKey = previousNewestBlockKeyRef.current;
+        previousNewestBlockKeyRef.current = newestBlockKey;
+
+        if (
+            !newestBlock ||
+            previousNewestBlockKey === null ||
+            previousNewestBlockKey === newestBlockKey ||
+            viewLevel !== 3 ||
+            selectedLatestBlockKey !== null
+        ) {
+            return;
+        }
+
+        scrollLatestBlockIntoView(newestBlock);
+    }, [blocks, scrollLatestBlockIntoView, selectedLatestBlockKey, viewLevel]);
+
+    const navigateLatest = useCallback((direction: -1 | 1) => {
+        if (latestBlockIndex < 0) return;
+        const nextIndex = clampNumber(latestBlockIndex + direction, 0, blocks.length - 1);
+        if (nextIndex === latestBlockIndex) return;
+
+        const nextBlock = blocks[nextIndex];
+        setSelectedLatestBlockKey(nextIndex === blocks.length - 1 ? null : nextBlock.key);
+        setFocusedIndex(0);
+        hideOverflowTooltip();
+
+        scrollLatestBlockIntoView(nextBlock);
+    }, [blocks, hideOverflowTooltip, latestBlockIndex, scrollLatestBlockIntoView]);
+
+    const jumpToLatest = useCallback(() => {
+        const newestBlock = blocks[blocks.length - 1];
+        if (!newestBlock) return;
+
+        setSelectedLatestBlockKey(null);
+        setFocusedIndex(0);
+        hideOverflowTooltip();
+
+        scrollLatestBlockIntoView(newestBlock);
+    }, [blocks, hideOverflowTooltip, scrollLatestBlockIntoView]);
+
     const normalizedSearch = search.trim().toLowerCase();
 
     const filteredBlocks = useMemo(() => {
         const term = search.toLowerCase().trim();
         const showHeadings = viewLevel !== 1;
-        const visibleBlocks = viewLevel === 3 ? blocks.slice(-1) : blocks;
+        const visibleBlocks = viewLevel === 3
+            ? (latestBlock ? [latestBlock] : [])
+            : blocks;
         return visibleBlocks.filter((block) => {
             const titleText = block.title.toLowerCase();
             const promptText = (block.prompt?.text || '').toLowerCase();
@@ -978,7 +1081,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 (showHeadings && headingsText.includes(term))
             );
         });
-    }, [blocks, search, viewLevel]);
+    }, [blocks, latestBlock, search, viewLevel]);
 
     type FocusItem =
         | { key: string; kind: 'block'; block: Block }
@@ -1014,6 +1117,35 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         focusableItems.forEach((item, idx) => map.set(item.key, idx));
         return map;
     }, [focusableItems]);
+
+    const getVisibleFocusKey = useCallback((block: Block, visibleTurn: Turn) => {
+        if (viewLevel === 1) return block.key;
+
+        const visibleTurnKey = visibleTurn.turnId || visibleTurn.id;
+        const answerKey = block.answer ? (block.answer.turnId || block.answer.id) : null;
+        if (visibleTurnKey !== answerKey) return block.key;
+
+        if (block.headings.length === 0) {
+            return `${block.key}-heading-0`;
+        }
+
+        const viewportAnchor = getViewportReadingAnchor();
+        let activeHeadingIndex = -1;
+        for (let index = 0; index < block.headings.length; index++) {
+            const heading = block.headings[index];
+            if (!heading.element?.isConnected) continue;
+            const rect = heading.element.getBoundingClientRect();
+            if (rect.top <= viewportAnchor) {
+                activeHeadingIndex = index;
+            } else {
+                break;
+            }
+        }
+
+        return activeHeadingIndex >= 0
+            ? `${block.key}-heading-${activeHeadingIndex}`
+            : block.key;
+    }, [viewLevel]);
 
     const getCurrentExportBlocks = useCallback((): ExportBlock[] => {
         return blocks.map((block) => {
@@ -1405,6 +1537,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     }, []);
 
     const handleSearchKeyDown = useCallback((e: ReactKeyboardEvent<HTMLInputElement>) => {
+        if (e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            searchInputRef.current?.blur();
+            return;
+        }
+
         e.stopPropagation(); // Always stop propagation from search input
         const trimmed = search.trim().toLowerCase();
 
@@ -1438,6 +1575,23 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         e.stopPropagation();
     }, []);
 
+    const moveSidebarFocus = useCallback((direction: -1 | 1) => {
+        if (focusableItems.length === 0) return;
+        manualSidebarNavigationUntilRef.current = Date.now() + 400;
+        userInteractionRef.current = true;
+        setFocusedIndex((previousIndex) => {
+            const currentIndex = previousIndex < 0 ? (direction > 0 ? -1 : 0) : previousIndex;
+            return clampNumber(currentIndex + direction, 0, focusableItems.length - 1);
+        });
+    }, [focusableItems.length]);
+
+    const handleSidebarNavigationKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
+        if (e.shiftKey || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        moveSidebarFocus(e.key === 'ArrowDown' ? 1 : -1);
+    }, [moveSidebarFocus]);
+
     useEffect(() => {
         return () => {};
     }, []);
@@ -1445,21 +1599,68 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const findVisibleTurnIndex = useCallback(() => {
         if (!turns.length) return -1;
 
-        const viewportHeight = window.innerHeight;
-        const headerOffset = 100; // Approximate header height
+        const viewportAnchor = getViewportReadingAnchor();
+        let closestIndex = -1;
+        let closestDistance = Number.POSITIVE_INFINITY;
 
         for (let i = 0; i < turns.length; i++) {
             const turn = turns[i];
-            if (!turn.element) continue;
+            if (!turn.element?.isConnected) continue;
             const rect = turn.element.getBoundingClientRect();
 
-            if ((rect.top >= headerOffset && rect.top < viewportHeight) ||
-                (rect.top < headerOffset && rect.bottom > headerOffset)) {
+            if (rect.top <= viewportAnchor && rect.bottom > viewportAnchor) {
                 return i;
             }
+
+            const distance = rect.top > viewportAnchor
+                ? rect.top - viewportAnchor
+                : viewportAnchor - rect.bottom;
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestIndex = i;
+            }
         }
-        return 0; // Default to first if none found
+        return closestIndex;
     }, [turns]);
+
+    const syncLatestToVisibleTurn = useCallback(() => {
+        if (
+            viewLevel !== 3 ||
+            suppressLatestScrollSyncRef.current ||
+            Date.now() < manualSidebarNavigationUntilRef.current
+        ) {
+            return false;
+        }
+
+        const visibleTurnIndex = findVisibleTurnIndex();
+        if (visibleTurnIndex < 0) return false;
+
+        const visibleBlockIndex = findBlockIndexForTurn(turns[visibleTurnIndex]);
+        if (visibleBlockIndex < 0) return false;
+
+        const visibleBlock = blocks[visibleBlockIndex];
+        const nextSelectedKey = visibleBlockIndex === blocks.length - 1 ? null : visibleBlock.key;
+        if (nextSelectedKey !== selectedLatestBlockKey) {
+            setSelectedLatestBlockKey(nextSelectedKey);
+        }
+
+        const focusKey = getVisibleFocusKey(visibleBlock, turns[visibleTurnIndex]);
+        const nextFocusedIndex = focusIndexByKey.get(focusKey);
+        if (nextFocusedIndex !== undefined && nextFocusedIndex !== focusedIndexRef.current) {
+            isSmoothPursuit.current = true;
+            setFocusedIndex(nextFocusedIndex);
+        } else if (nextFocusedIndex === undefined && focusedIndexRef.current !== 0) {
+            setFocusedIndex(0);
+        }
+        return true;
+    }, [blocks, findBlockIndexForTurn, findVisibleTurnIndex, focusIndexByKey, getVisibleFocusKey, selectedLatestBlockKey, turns, viewLevel]);
+
+    useLayoutEffect(() => {
+        if (viewLevel !== 3 || !selectedLatestBlockKey || latestBlockIndex >= 0) return;
+        if (!syncLatestToVisibleTurn()) {
+            setSelectedLatestBlockKey(null);
+        }
+    }, [latestBlockIndex, selectedLatestBlockKey, syncLatestToVisibleTurn, viewLevel]);
 
     useEffect(() => {
         if (!container || !isOpen || isPaused) return;
@@ -1472,17 +1673,21 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         const handleScroll = () => {
             if (!ticking) {
                 window.requestAnimationFrame(() => {
-                    if (!isHoveringSidebar.current) {
+                    if (Date.now() < manualSidebarNavigationUntilRef.current) {
+                        ticking = false;
+                        return;
+                    }
+                    const syncedLatest = syncLatestToVisibleTurn();
+                    if (!syncedLatest && !isHoveringSidebar.current) {
                         const visibleTurnIndex = findVisibleTurnIndex();
                         if (visibleTurnIndex >= 0) {
                             const turn = turns[visibleTurnIndex];
-                            const itemIndex = focusableItems.findIndex(item =>
-                                item.kind === 'block' && (
-                                    item.block.prompt?.id === turn.id || item.block.answer?.id === turn.id
-                                )
-                            );
+                            const visibleBlockIndex = findBlockIndexForTurn(turn);
+                            const visibleBlock = visibleBlockIndex >= 0 ? blocks[visibleBlockIndex] : undefined;
+                            const focusKey = visibleBlock ? getVisibleFocusKey(visibleBlock, turn) : null;
+                            const itemIndex = focusKey ? (focusIndexByKey.get(focusKey) ?? -1) : -1;
 
-                            if (itemIndex >= 0 && itemIndex !== focusedIndex) {
+                            if (itemIndex >= 0 && itemIndex !== focusedIndexRef.current) {
                                 isSmoothPursuit.current = true;
                                 setFocusedIndex(itemIndex);
                             }
@@ -1495,8 +1700,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         };
 
         scrollEl.addEventListener('scroll', handleScroll, { passive: true });
+        handleScroll();
         return () => scrollEl.removeEventListener('scroll', handleScroll);
-    }, [container, isOpen, isPaused, turns, focusableItems, focusedIndex, findVisibleTurnIndex]);
+    }, [blocks, container, findBlockIndexForTurn, findVisibleTurnIndex, focusIndexByKey, getVisibleFocusKey, isOpen, isPaused, syncLatestToVisibleTurn, turns]);
 
     useEffect(() => {
         if (isOpen && !isPaused && !hasInitializedFocus.current) {
@@ -1560,6 +1766,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     useEffect(() => {
         if (!isOpen || isPaused) return;
+        if (viewLevel === 3) return;
         const id = window.setTimeout(() => {
             if (focusedIndex < 0 || focusedIndex === 0) {
                 searchInputRef.current?.focus();
@@ -1567,7 +1774,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             }
         }, 100); // Small delay to let scroll settle
         return () => window.clearTimeout(id);
-    }, [isOpen, isPaused]);
+    }, [isOpen, isPaused, viewLevel]);
 
     useEffect(() => {
         if (!contextMenu) return;
@@ -1777,38 +1984,27 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 return;
             }
 
+            if (e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                return;
+            }
+
+            const eventPath = e.composedPath();
+            if (
+                (e.key === 'ArrowDown' || e.key === 'ArrowUp') &&
+                sidebarShellRef.current &&
+                eventPath.includes(sidebarShellRef.current)
+            ) {
+                return;
+            }
+
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
                 e.stopPropagation();
-                userInteractionRef.current = true;
-                if (e.shiftKey) {
-                    setFocusedIndex(prev => {
-                        let next = prev + 1;
-                        while (next < focusableItems.length) {
-                            if (focusableItems[next].kind === 'block') return next;
-                            next++;
-                        }
-                        return prev; // Stay if no next prompt
-                    });
-                } else {
-                    setFocusedIndex(prev => Math.min(prev + 1, focusableItems.length - 1));
-                }
+                moveSidebarFocus(1);
             } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
                 e.stopPropagation();
-                userInteractionRef.current = true;
-                if (e.shiftKey) {
-                    setFocusedIndex(prev => {
-                        let next = prev - 1;
-                        while (next >= 0) {
-                            if (focusableItems[next].kind === 'block') return next;
-                            next--;
-                        }
-                        return prev; // Stay if no prev prompt
-                    });
-                } else {
-                    setFocusedIndex(prev => Math.max(prev - 1, 0));
-                }
+                moveSidebarFocus(-1);
             } else if (e.key === 'Tab' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1838,7 +2034,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
         window.addEventListener('keydown', handler, true); // Capture phase to beat Claude
         return () => window.removeEventListener('keydown', handler, true);
-    }, [copyWithMarkdown, focusableItems, focusedIndex, getTurnCopyText, isOpen, isPaused, onToggle, providerName, showHelp, showToast, startExport]);
+    }, [copyWithMarkdown, focusableItems, focusedIndex, getTurnCopyText, isOpen, isPaused, moveSidebarFocus, onToggle, providerName, showHelp, showToast, startExport]);
 
     // Capture-phase contextmenu handler (beats host page interception)
     const filteredBlocksRef = useRef(filteredBlocks);
@@ -1913,6 +2109,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             el.scrollIntoView({ behavior, block });
 
             if (userInteractionRef.current) {
+                el.focus({ preventScroll: true });
                 setTimeout(() => {
                     userInteractionRef.current = false;
                 }, 50);
@@ -2221,6 +2418,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     aria-label="Scroll Pro outline"
                     onMouseEnter={() => isHoveringSidebar.current = true}
                     onMouseLeave={() => isHoveringSidebar.current = false}
+                    onKeyDown={handleSidebarNavigationKeyDown}
                 >
                     {showUpdateBanner ? (
                         <div className="scroll-pro-update-banner">
@@ -2382,6 +2580,46 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                             </div>
                         </div>
 
+                        {viewLevel === 3 && latestBlockIndex >= 0 && (
+                            <div className="scroll-pro-latest-nav" role="group" aria-label="Latest turn navigation">
+                                <button
+                                    type="button"
+                                    className="scroll-pro-latest-nav-btn"
+                                    aria-label="Previous turn"
+                                    title="Previous turn (X-1)"
+                                    disabled={latestBlockIndex <= 0}
+                                    onClick={() => navigateLatest(-1)}
+                                >
+                                    <span aria-hidden="true">←</span>
+                                    <span>Previous</span>
+                                </button>
+                                <span className="scroll-pro-latest-position" aria-live="polite">
+                                    {latestBlockIndex + 1} / {blocks.length} loaded
+                                </span>
+                                <button
+                                    type="button"
+                                    className="scroll-pro-latest-nav-btn"
+                                    aria-label="Next turn"
+                                    title="Next turn (X+1)"
+                                    disabled={latestBlockIndex < 0 || latestBlockIndex === blocks.length - 1}
+                                    onClick={() => navigateLatest(1)}
+                                >
+                                    <span>Next</span>
+                                    <span aria-hidden="true">→</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="scroll-pro-latest-nav-btn scroll-pro-latest-jump-btn"
+                                    aria-label="Back to latest turn"
+                                    title="Back to latest turn"
+                                    disabled={selectedLatestBlockKey === null}
+                                    onClick={jumpToLatest}
+                                >
+                                    Latest
+                                </button>
+                            </div>
+                        )}
+
                         <div className="scroll-pro-search">
                             <svg className="scroll-pro-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                             <input
@@ -2470,6 +2708,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     }}
                                     className={`scroll-pro-sidebar-item ${focusedIndex === focusIdx ? 'is-focused' : ''}`}
                                     aria-selected={focusedIndex === focusIdx}
+                                    aria-current={focusedIndex === focusIdx ? 'location' : undefined}
+                                    tabIndex={0}
                                 >
                                     <div className="scroll-pro-item-body">
                                         <TruncatedTitle

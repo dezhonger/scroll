@@ -497,6 +497,54 @@
   opacity: 0.4;
 }
 
+.scroll-pro-latest-nav {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.scroll-pro-latest-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.scroll-pro-latest-nav-btn:last-child {
+  justify-self: end;
+}
+
+.scroll-pro-latest-nav-btn:hover:not(:disabled),
+.scroll-pro-latest-nav-btn:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-item-hover);
+  border-color: var(--border-outer);
+}
+
+.scroll-pro-latest-nav-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.scroll-pro-latest-position {
+  min-width: 82px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .scroll-pro-search {
   position: relative;
 }
@@ -584,6 +632,7 @@
 
 .scroll-pro-sidebar-item.is-focused {
   background: var(--bg-item-active);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .scroll-pro-sidebar-item.is-saved .scroll-pro-item-title {
@@ -658,6 +707,7 @@
   color: var(--text-primary);
   font-weight: 600;
   background: var(--bg-item-active);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .scroll-pro-section-copy-btn {
