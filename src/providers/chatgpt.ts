@@ -53,7 +53,7 @@ export const chatgpt: Provider = {
                         timeLabel = previousSibling.getAttribute('aria-label')?.trim() || undefined;
                     }
 
-                    const headingElements = Array.from(contentEl.querySelectorAll('h1, h2, h3, h4'));
+                    const headingElements = Array.from(contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6'));
                     headings = headingElements.map((h, idx) => {
                         const innerText = (h as HTMLElement).innerText.trim();
                         return {

@@ -37,7 +37,7 @@ export const gemini: Provider = {
                 const markdown = item.querySelector('message-content .markdown');
                 if (markdown) {
                     text = serializeNodeToMarkdown(markdown) || (markdown as HTMLElement).innerText || '';
-                    headings = Array.from(markdown.querySelectorAll('h1, h2, h3, h4')).map(h => ({
+                    headings = Array.from(markdown.querySelectorAll('h1, h2, h3, h4, h5, h6')).map(h => ({
                         innerText: (h as HTMLElement).innerText,
                         element: h as HTMLElement,
                         tagName: h.tagName

@@ -20,12 +20,30 @@ const CONTEXT_HINT_KEY = 'scroll-pro-context-hint-seen';
 const LINE_CLAMP_KEY = 'scroll-pro-line-clamp';
 const COPY_MARKDOWN_KEY = 'scroll-pro-copy-markdown';
 const CHATGPT_CAPTURE_CONSENT_KEY = 'scroll-pro-chatgpt-capture-consent';
+const HEADING_DEPTH_KEY = 'scroll-pro-heading-depth';
+const SIDEBAR_WIDTH_KEY = 'scroll-pro-sidebar-width';
 const SIDEBAR_POSITION_KEY_PREFIX = 'scroll-pro-sidebar-position';
 const SIDEBAR_TOGGLE_SIZE = 42;
 const SIDEBAR_MARGIN = 18;
 const SIDEBAR_DEFAULT_TOP = 72;
 const SIDEBAR_GAP = 10;
 const SIDEBAR_LONG_PRESS_MS = 450;
+const SIDEBAR_DEFAULT_WIDTH = 420;
+const SIDEBAR_MIN_WIDTH = 320;
+const SIDEBAR_MAX_WIDTH = 640;
+const SIDEBAR_MAX_VIEWPORT_RATIO = 0.5;
+
+type HeadingDepth = 1 | 2 | 3 | 4 | 5 | 6;
+
+const HEADING_DEPTH_OPTIONS: HeadingDepth[] = [1, 2, 3, 4, 5, 6];
+
+const isHeadingDepth = (value: unknown): value is HeadingDepth => (
+    typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 6
+);
+
+const isSidebarWidth = (value: unknown): value is number => (
+    typeof value === 'number' && Number.isFinite(value)
+);
 
 type SidebarAnchorX = 'left' | 'right';
 
@@ -111,6 +129,7 @@ const TruncatedTitle = ({ text, onShowTooltip, onHideTooltip }: TruncatedTitlePr
 
 type TruncatedSubheadingProps = {
     text: string;
+    level: HeadingDepth;
     className: string;
     isFocused: boolean;
     isCopied: boolean;
@@ -123,6 +142,7 @@ type TruncatedSubheadingProps = {
 
 const TruncatedSubheading = ({
     text,
+    level,
     className,
     isFocused,
     isCopied,
@@ -141,7 +161,10 @@ const TruncatedSubheading = ({
     };
 
     return (
-        <div className={`scroll-pro-subheading-row ${isFocused ? 'is-focused' : ''}`}>
+        <div
+            className={`scroll-pro-subheading-row ${isFocused ? 'is-focused' : ''}`}
+            data-heading-level={level}
+        >
             <button
                 ref={(element) => {
                     elementRef.current = element;
@@ -181,6 +204,22 @@ const TruncatedSubheading = ({
 };
 
 const clampNumber = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const clampPreferredSidebarWidth = (value: number) => (
+    clampNumber(Math.round(value), SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+);
+
+const getEffectiveSidebarWidth = (preferredWidth: number) => {
+    const clampedPreferred = clampPreferredSidebarWidth(preferredWidth);
+    if (typeof window === 'undefined') return clampedPreferred;
+
+    const viewportLimit = Math.min(
+        SIDEBAR_MAX_WIDTH,
+        Math.floor(window.innerWidth * SIDEBAR_MAX_VIEWPORT_RATIO),
+        window.innerWidth - SIDEBAR_MARGIN * 2
+    );
+    return Math.max(240, Math.min(clampedPreferred, viewportLimit));
+};
 
 const getViewportReadingAnchor = () => (
     Math.min(160, Math.max(96, window.innerHeight * 0.12))
@@ -284,23 +323,26 @@ const loadSidebarPosition = (storageKey: string): SidebarPosition => {
     }
 };
 
-const getEstimatedSidebarSize = () => {
+const getEstimatedSidebarSize = (preferredWidth = SIDEBAR_DEFAULT_WIDTH) => {
     if (typeof window === 'undefined') {
-        return { width: 360, height: 480 };
+        return { width: SIDEBAR_DEFAULT_WIDTH, height: 480 };
     }
 
-    const width = Math.min(360, window.innerWidth * 0.94);
+    const width = getEffectiveSidebarWidth(preferredWidth);
     const maxHeight = Math.max(140, window.innerHeight - SIDEBAR_MARGIN * 2);
     const height = Math.min(window.innerHeight * 0.72, maxHeight);
     return { width, height };
 };
 
-const getSidebarOpenDirection = (pos: SidebarPosition): SidebarOpenDirection => {
+const getSidebarOpenDirection = (
+    pos: SidebarPosition,
+    preferredWidth = SIDEBAR_DEFAULT_WIDTH
+): SidebarOpenDirection => {
     if (typeof window === 'undefined') {
         return { x: 'right', y: 'down' };
     }
 
-    const { width, height } = getEstimatedSidebarSize();
+    const { width, height } = getEstimatedSidebarSize(preferredWidth);
     const spaceLeft = pos.x + SIDEBAR_TOGGLE_SIZE - SIDEBAR_MARGIN;
     const spaceRight = window.innerWidth - SIDEBAR_MARGIN - pos.x;
     const spaceUp = pos.y - SIDEBAR_MARGIN;
@@ -394,9 +436,10 @@ const RESPONSE_CONTENT_SELECTOR = [
     '.markdown',
 ].join(', ');
 
-const getHeadingLevel = (heading: Heading) => {
+const getHeadingLevel = (heading: Heading): HeadingDepth => {
     const match = (heading.tagName || heading.element.tagName).match(/^H([1-6])$/i);
-    return match ? Number(match[1]) : 6;
+    const parsed = match ? Number(match[1]) : 6;
+    return isHeadingDepth(parsed) ? parsed : 6;
 };
 
 const serializeNodeToPlainText = (node: Node): string => {
@@ -497,6 +540,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const [selectedLatestBlockKey, setSelectedLatestBlockKey] = useState<string | null>(null);
     const [overflowTooltip, setOverflowTooltip] = useState<OverflowTooltip | null>(null);
     const [progress, setProgress] = useState(0);
+    const [headingDepth, setHeadingDepth] = useState<HeadingDepth>(4);
+    const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+    const [isResizing, setIsResizing] = useState(false);
     const [lineClamp, setLineClamp] = useState<number>(() => getLineClamp());
     const [focusedIndex, setFocusedIndex] = useState<number>(-1);
     const [lastFocusedKey, setLastFocusedKey] = useState<string | null>(null);
@@ -529,8 +575,10 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const sidebarShellRef = useRef<HTMLDivElement | null>(null);
     const toggleButtonRef = useRef<HTMLButtonElement | null>(null);
+    const resizeHandleRef = useRef<HTMLDivElement | null>(null);
     const focusedIndexRef = useRef(focusedIndex);
     const sidebarPositionRef = useRef<SidebarPosition>(sidebarPosition);
+    const sidebarWidthRef = useRef(sidebarWidth);
     const dragPositionRef = useRef<SidebarPosition | null>(null);
     const dragOpenDirectionRef = useRef<SidebarOpenDirection | null>(null);
     const dragStateRef = useRef({
@@ -544,6 +592,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const longPressTimerRef = useRef<number | null>(null);
     const suppressClickRef = useRef(false);
     const dragBodyStyleRef = useRef<{ userSelect: string; cursor: string } | null>(null);
+    const resizeBodyStyleRef = useRef<{ userSelect: string; cursor: string } | null>(null);
+    const resizeStateRef = useRef({
+        pointerId: null as number | null,
+        startX: 0,
+        startWidth: SIDEBAR_DEFAULT_WIDTH,
+        openX: 'left' as SidebarOpenDirection['x'],
+    });
     const ignoreNextPositionWriteRef = useRef(false);
     const hasInitializedFocus = useRef(false);
     const userInteractionRef = useRef(false);
@@ -559,6 +614,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const turnsRef = useRef(turns);
     useEffect(() => { turnsRef.current = turns; }, [turns]);
     useEffect(() => { focusedIndexRef.current = focusedIndex; }, [focusedIndex]);
+    useEffect(() => { sidebarWidthRef.current = sidebarWidth; }, [sidebarWidth]);
 
     useEffect(() => () => {
         if (copiedSectionTimerRef.current !== null) {
@@ -606,6 +662,48 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     }, []);
 
     useEffect(() => {
+        const handleStorageChange = (
+            changes: Record<string, chrome.storage.StorageChange>,
+            areaName: string
+        ) => {
+            if (areaName !== 'local') return;
+            const nextValue = changes[HEADING_DEPTH_KEY]?.newValue;
+            if (isHeadingDepth(nextValue)) {
+                setHeadingDepth(nextValue);
+            }
+
+            const nextWidth = changes[SIDEBAR_WIDTH_KEY]?.newValue;
+            if (isSidebarWidth(nextWidth)) {
+                setSidebarWidth(clampPreferredSidebarWidth(nextWidth));
+            }
+        };
+
+        try {
+            chrome.storage.local.get([HEADING_DEPTH_KEY, SIDEBAR_WIDTH_KEY], (result) => {
+                const savedDepth = result[HEADING_DEPTH_KEY];
+                if (isHeadingDepth(savedDepth)) {
+                    setHeadingDepth(savedDepth);
+                }
+                const savedWidth = result[SIDEBAR_WIDTH_KEY];
+                if (isSidebarWidth(savedWidth)) {
+                    setSidebarWidth(clampPreferredSidebarWidth(savedWidth));
+                }
+            });
+            chrome.storage.onChanged.addListener(handleStorageChange);
+            return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+        } catch {
+            return undefined;
+        }
+    }, []);
+
+    const updateHeadingDepth = useCallback((depth: HeadingDepth) => {
+        setHeadingDepth(depth);
+        try {
+            chrome.storage.local.set({ [HEADING_DEPTH_KEY]: depth });
+        } catch {}
+    }, []);
+
+    useEffect(() => {
         if (isOpen && !bannerDismissed && !showUpdateBanner) {
             setShowUpdateBanner(true);
         }
@@ -629,7 +727,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const applySidebarPosition = useCallback((pos: { x: number; y: number }) => {
         const resolved = createSidebarPositionFromPoint(pos);
         dragPositionRef.current = resolved;
-        const direction = getSidebarOpenDirection(resolved);
+        const direction = getSidebarOpenDirection(resolved, sidebarWidthRef.current);
         dragOpenDirectionRef.current = direction;
 
         const shell = sidebarShellRef.current;
@@ -659,6 +757,27 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             document.body.style.userSelect = dragBodyStyleRef.current.userSelect;
             document.body.style.cursor = dragBodyStyleRef.current.cursor;
             dragBodyStyleRef.current = null;
+        }
+    }, []);
+
+    const setResizeStyles = useCallback((active: boolean) => {
+        if (typeof document === 'undefined') return;
+        if (active) {
+            if (!resizeBodyStyleRef.current) {
+                resizeBodyStyleRef.current = {
+                    userSelect: document.body.style.userSelect,
+                    cursor: document.body.style.cursor,
+                };
+            }
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'ew-resize';
+            return;
+        }
+
+        if (resizeBodyStyleRef.current) {
+            document.body.style.userSelect = resizeBodyStyleRef.current.userSelect;
+            document.body.style.cursor = resizeBodyStyleRef.current.cursor;
+            resizeBodyStyleRef.current = null;
         }
     }, []);
 
@@ -762,6 +881,62 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         onToggle();
     }, [onToggle]);
 
+    const handleSidebarResizeMove = useCallback((event: PointerEvent) => {
+        const resizeState = resizeStateRef.current;
+        if (resizeState.pointerId !== event.pointerId) return;
+        event.preventDefault();
+
+        const deltaX = event.clientX - resizeState.startX;
+        const desiredWidth = resizeState.openX === 'left'
+            ? resizeState.startWidth - deltaX
+            : resizeState.startWidth + deltaX;
+        const nextWidth = getEffectiveSidebarWidth(desiredWidth);
+        sidebarWidthRef.current = nextWidth;
+        setSidebarWidth(nextWidth);
+        hideOverflowTooltip();
+    }, [hideOverflowTooltip]);
+
+    const handleSidebarResizeEnd = useCallback((event: PointerEvent) => {
+        if (resizeStateRef.current.pointerId !== event.pointerId) return;
+
+        window.removeEventListener('pointermove', handleSidebarResizeMove, true);
+        window.removeEventListener('pointerup', handleSidebarResizeEnd, true);
+        window.removeEventListener('pointercancel', handleSidebarResizeEnd, true);
+
+        try {
+            resizeHandleRef.current?.releasePointerCapture(event.pointerId);
+        } catch {
+        }
+
+        resizeStateRef.current.pointerId = null;
+        setIsResizing(false);
+        setResizeStyles(false);
+        try {
+            chrome.storage.local.set({ [SIDEBAR_WIDTH_KEY]: sidebarWidthRef.current });
+        } catch {}
+    }, [handleSidebarResizeMove, setResizeStyles]);
+
+    const handleSidebarResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+
+        const shellOpenX = sidebarShellRef.current?.dataset.openX;
+        resizeStateRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startWidth: getEffectiveSidebarWidth(sidebarWidthRef.current),
+            openX: shellOpenX === 'right' ? 'right' : 'left',
+        };
+        setIsResizing(true);
+        setResizeStyles(true);
+        resizeHandleRef.current?.setPointerCapture(event.pointerId);
+
+        window.addEventListener('pointermove', handleSidebarResizeMove, true);
+        window.addEventListener('pointerup', handleSidebarResizeEnd, true);
+        window.addEventListener('pointercancel', handleSidebarResizeEnd, true);
+    }, [handleSidebarResizeEnd, handleSidebarResizeMove, setResizeStyles]);
+
     useEffect(() => {
         sidebarPositionRef.current = sidebarPosition;
     }, [sidebarPosition]);
@@ -810,9 +985,20 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             window.removeEventListener('pointermove', handleTogglePointerMove, true);
             window.removeEventListener('pointerup', handleTogglePointerUp, true);
             window.removeEventListener('pointercancel', handleTogglePointerUp, true);
+            window.removeEventListener('pointermove', handleSidebarResizeMove, true);
+            window.removeEventListener('pointerup', handleSidebarResizeEnd, true);
+            window.removeEventListener('pointercancel', handleSidebarResizeEnd, true);
             setDragStyles(false);
+            setResizeStyles(false);
         };
-    }, [handleTogglePointerMove, handleTogglePointerUp, setDragStyles]);
+    }, [
+        handleSidebarResizeEnd,
+        handleSidebarResizeMove,
+        handleTogglePointerMove,
+        handleTogglePointerUp,
+        setDragStyles,
+        setResizeStyles,
+    ]);
 
     const preserveSidebarScroll = (callback: () => void) => {
         const list = document.querySelector('.scroll-pro-sidebar-list') as HTMLElement;
@@ -1060,6 +1246,16 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         scrollLatestBlockIntoView(newestBlock);
     }, [blocks, hideOverflowTooltip, scrollLatestBlockIntoView]);
 
+    const getVisibleHeadingEntries = useCallback((block: Block) => (
+        block.headings
+            .map((heading, index) => ({
+                heading,
+                index,
+                level: getHeadingLevel(heading),
+            }))
+            .filter((entry) => entry.level <= headingDepth)
+    ), [headingDepth]);
+
     const normalizedSearch = search.trim().toLowerCase();
 
     const filteredBlocks = useMemo(() => {
@@ -1072,7 +1268,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             const titleText = block.title.toLowerCase();
             const promptText = (block.prompt?.text || '').toLowerCase();
             const answerText = (block.answer?.text || '').toLowerCase();
-            const headingsText = block.headings.map((h) => h.innerText.toLowerCase()).join(' ');
+            const headingsText = getVisibleHeadingEntries(block)
+                .map(({ heading }) => heading.innerText.toLowerCase())
+                .join(' ');
             if (!term) return true;
             return (
                 titleText.includes(term) ||
@@ -1081,7 +1279,17 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 (showHeadings && headingsText.includes(term))
             );
         });
-    }, [blocks, latestBlock, search, viewLevel]);
+    }, [blocks, getVisibleHeadingEntries, latestBlock, search, viewLevel]);
+
+    const maximumDetectedHeadingDepth = useMemo<HeadingDepth | null>(() => {
+        let maximum = 0;
+        filteredBlocks.forEach((block) => {
+            block.headings.forEach((heading) => {
+                maximum = Math.max(maximum, getHeadingLevel(heading));
+            });
+        });
+        return maximum > 0 && isHeadingDepth(maximum) ? maximum : null;
+    }, [filteredBlocks]);
 
     type FocusItem =
         | { key: string; kind: 'block'; block: Block }
@@ -1100,17 +1308,23 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         filteredBlocks.forEach((block) => {
             items.push({ key: block.key, kind: 'block', block });
             if (showHeadings && block.answer) {
-                if (block.headings.length > 0) {
-                    block.headings.forEach((h, idx) => {
-                        items.push({ key: `${block.key}-heading-${idx}`, kind: 'heading', block, heading: h });
+                const visibleHeadings = getVisibleHeadingEntries(block);
+                if (visibleHeadings.length > 0) {
+                    visibleHeadings.forEach(({ heading, index }) => {
+                        items.push({
+                            key: `${block.key}-heading-${index}`,
+                            kind: 'heading',
+                            block,
+                            heading,
+                        });
                     });
-                } else {
+                } else if (block.headings.length === 0) {
                     items.push({ key: `${block.key}-heading-0`, kind: 'heading', block, heading: undefined });
                 }
             }
         });
         return items;
-    }, [filteredBlocks, viewLevel, normalizedSearch]);
+    }, [filteredBlocks, getVisibleHeadingEntries, viewLevel, normalizedSearch]);
 
     const focusIndexByKey = useMemo(() => {
         const map = new Map<string, number>();
@@ -1129,10 +1343,12 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             return `${block.key}-heading-0`;
         }
 
+        const visibleHeadings = getVisibleHeadingEntries(block);
+        if (visibleHeadings.length === 0) return block.key;
+
         const viewportAnchor = getViewportReadingAnchor();
         let activeHeadingIndex = -1;
-        for (let index = 0; index < block.headings.length; index++) {
-            const heading = block.headings[index];
+        for (const { heading, index } of visibleHeadings) {
             if (!heading.element?.isConnected) continue;
             const rect = heading.element.getBoundingClientRect();
             if (rect.top <= viewportAnchor) {
@@ -1145,7 +1361,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         return activeHeadingIndex >= 0
             ? `${block.key}-heading-${activeHeadingIndex}`
             : block.key;
-    }, [viewLevel]);
+    }, [getVisibleHeadingEntries, viewLevel]);
 
     const getCurrentExportBlocks = useCallback((): ExportBlock[] => {
         return blocks.map((block) => {
@@ -2380,20 +2596,25 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const effectivePosition = isDragging && dragPositionRef.current
         ? dragPositionRef.current
         : sidebarPosition;
+    const effectiveSidebarWidth = getEffectiveSidebarWidth(sidebarWidth);
+    const calculatedOpenDirection = getSidebarOpenDirection(effectivePosition, effectiveSidebarWidth);
     const effectiveDirection = isDragging && dragOpenDirectionRef.current
         ? dragOpenDirectionRef.current
-        : getSidebarOpenDirection(effectivePosition);
+        : (isResizing
+            ? { ...calculatedOpenDirection, x: resizeStateRef.current.openX }
+            : calculatedOpenDirection);
 
     return (
         <div
             ref={sidebarShellRef}
-            className={`scroll-pro-sidebar-shell ${isOpen ? 'is-open' : ''} ${isDragging ? 'is-dragging' : ''}`}
+            className={`scroll-pro-sidebar-shell ${isOpen ? 'is-open' : ''} ${isDragging ? 'is-dragging' : ''} ${isResizing ? 'is-resizing' : ''}`}
             data-open-x={effectiveDirection.x}
             data-open-y={effectiveDirection.y}
             style={{
                 ['--sidebar-line-clamp' as string]: lineClamp,
                 ['--sidebar-x' as string]: `${effectivePosition.x}px`,
                 ['--sidebar-y' as string]: `${effectivePosition.y}px`,
+                ['--sidebar-width' as string]: `${effectiveSidebarWidth}px`,
             }}
         >
             <button
@@ -2420,6 +2641,18 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     onMouseLeave={() => isHoveringSidebar.current = false}
                     onKeyDown={handleSidebarNavigationKeyDown}
                 >
+                    <div
+                        ref={resizeHandleRef}
+                        className="scroll-pro-sidebar-resize-handle"
+                        role="separator"
+                        aria-label="Resize outline"
+                        aria-orientation="vertical"
+                        aria-valuemin={Math.round(getEffectiveSidebarWidth(SIDEBAR_MIN_WIDTH))}
+                        aria-valuemax={Math.round(getEffectiveSidebarWidth(SIDEBAR_MAX_WIDTH))}
+                        aria-valuenow={Math.round(effectiveSidebarWidth)}
+                        title="Drag to resize outline"
+                        onPointerDown={handleSidebarResizeStart}
+                    />
                     {showUpdateBanner ? (
                         <div className="scroll-pro-update-banner">
                             <button
@@ -2620,6 +2853,40 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                             </div>
                         )}
 
+                        {viewLevel !== 1 && (
+                            <div className="scroll-pro-heading-depth" role="group" aria-label="Maximum heading depth">
+                                <span className="scroll-pro-heading-depth-label">
+                                    <span>Heading depth</span>
+                                    <span className="scroll-pro-heading-depth-hint">
+                                        {maximumDetectedHeadingDepth
+                                            ? `up to H${maximumDetectedHeadingDepth} here`
+                                            : 'no headings here'}
+                                    </span>
+                                </span>
+                                <div className="scroll-pro-heading-depth-options">
+                                    {HEADING_DEPTH_OPTIONS.map((depth) => {
+                                        const hasNoAdditionalHeadings = maximumDetectedHeadingDepth !== null
+                                            && depth > maximumDetectedHeadingDepth;
+                                        const buttonTitle = hasNoAdditionalHeadings
+                                            ? `This outline only contains headings through H${maximumDetectedHeadingDepth}; H${depth} looks the same as H${maximumDetectedHeadingDepth}`
+                                            : `Show headings H1 through H${depth}`;
+                                        return (
+                                            <button
+                                                key={depth}
+                                                type="button"
+                                                className={`scroll-pro-heading-depth-btn ${headingDepth === depth ? 'is-active' : ''} ${hasNoAdditionalHeadings ? 'is-no-op' : ''}`}
+                                                aria-pressed={headingDepth === depth}
+                                                title={buttonTitle}
+                                                onClick={() => updateHeadingDepth(depth)}
+                                            >
+                                                H{depth}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
                         <div className="scroll-pro-search">
                             <svg className="scroll-pro-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                             <input
@@ -2680,6 +2947,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                             </div>
                         ) : filteredBlocks.map((block) => {
                             const focusIdx = focusIndexByKey.get(block.key) ?? -1;
+                            const visibleHeadings = getVisibleHeadingEntries(block);
                             return (
                                 <div
                                     key={block.key}
@@ -2719,14 +2987,15 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                         />
                                         {viewLevel !== 1 && block.answer && (
                                             <div className="scroll-pro-subheading-list">
-                                                {block.headings.length > 0 ? (
-                                                    block.headings.map((h, i) => {
-                                                        const headingKey = `${block.key}-heading-${i}`;
+                                                {visibleHeadings.length > 0 ? (
+                                                    visibleHeadings.map(({ heading, index, level }) => {
+                                                        const headingKey = `${block.key}-heading-${index}`;
                                                         const headingFocusIndex = focusIndexByKey.get(headingKey) ?? -1;
                                                         return (
                                                             <TruncatedSubheading
                                                                 key={headingKey}
-                                                                text={h.innerText}
+                                                                text={heading.innerText}
+                                                                level={level}
                                                                 isFocused={focusedIndex === headingFocusIndex}
                                                                 isCopied={copiedSectionKey === headingKey}
                                                                 buttonRef={(el) => {
@@ -2740,14 +3009,14 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
-                                                                    scrollToElement(h.element);
+                                                                    scrollToElement(heading.element);
                                                                 }}
                                                                 onCopy={(e) => {
                                                                     e.preventDefault();
                                                                     e.stopPropagation();
                                                                     hideOverflowTooltip();
                                                                     if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
-                                                                    copyHeadingSection(headingKey, block.answer!, h);
+                                                                    copyHeadingSection(headingKey, block.answer!, heading);
                                                                 }}
                                                                 onShowTooltip={showOverflowTooltip}
                                                                 onHideTooltip={hideOverflowTooltip}
@@ -2755,7 +3024,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                         );
                                                     })
                                                 ) : (
-                                                    block.answer.text && (
+                                                    block.headings.length === 0 && block.answer.text ? (
                                                         <button
                                                             key={`${block.key}-heading-0`}
                                                             ref={(el) => {
@@ -2776,7 +3045,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                         >
                                                             {snippet(block.answer.text, 80)}
                                                         </button>
-                                                    )
+                                                    ) : null
                                                 )}
                                             </div>
                                         )}
