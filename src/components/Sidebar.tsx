@@ -437,6 +437,7 @@ const RESPONSE_CONTENT_SELECTOR = [
 ].join(', ');
 
 const getHeadingLevel = (heading: Heading): HeadingDepth => {
+    if (isHeadingDepth(heading.outlineLevel)) return heading.outlineLevel;
     const match = (heading.tagName || heading.element.tagName).match(/^H([1-6])$/i);
     const parsed = match ? Number(match[1]) : 6;
     return isHeadingDepth(parsed) ? parsed : 6;
@@ -501,6 +502,8 @@ const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: b
     const nextBoundary = responseHeadings
         .slice(currentIndex + 1)
         .find((candidate) => {
+            const parsedHeading = turn.headings.find((heading) => heading.element === candidate);
+            if (parsedHeading) return getHeadingLevel(parsedHeading) <= currentLevel;
             const match = candidate.tagName.match(/^H([1-6])$/i);
             const candidateLevel = match ? Number(match[1]) : 6;
             return candidateLevel <= currentLevel;

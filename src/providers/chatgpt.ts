@@ -1,5 +1,6 @@
 import { Provider, Turn } from '../types';
 import { serializeNodeToMarkdown } from '../lib/markdownUtil';
+import { inferChatGptOutlineLevels } from './chatgptHeadingLevels';
 
 export const chatgpt: Provider = {
     name: 'chatgpt',
@@ -54,12 +55,17 @@ export const chatgpt: Provider = {
                     }
 
                     const headingElements = Array.from(contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+                    const outlineLevels = inferChatGptOutlineLevels(headingElements.map((heading) => ({
+                        text: (heading as HTMLElement).innerText.trim(),
+                        tagName: heading.tagName,
+                    })));
                     headings = headingElements.map((h, idx) => {
                         const innerText = (h as HTMLElement).innerText.trim();
                         return {
                             innerText: innerText || `Section ${idx + 1}`,
                             element: h as HTMLElement,
                             tagName: h.tagName,
+                            outlineLevel: outlineLevels[idx],
                             isPlaceholder: !innerText
                         };
                     });
