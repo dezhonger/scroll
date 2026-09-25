@@ -35,7 +35,12 @@ const computeTargetPosition = (
   const rawTarget = containerIsWindow
     ? rect.top + window.scrollY
     : rect.top + scrollTop - (containerRect?.top ?? 0);
-  return Math.max(0, rawTarget - SCROLL_OFFSET);
+  const target = rawTarget - SCROLL_OFFSET;
+  if (!containerIsWindow && window.getComputedStyle(scrollContainer as HTMLElement).flexDirection === 'column-reverse') {
+    // ChatGPT's reversed scroller uses negative scrollTop values for older content.
+    return Math.min(0, target);
+  }
+  return Math.max(0, target);
 };
 
 const smoothScroll = (scrollContainer: HTMLElement | Window, targetPosition: number) => {

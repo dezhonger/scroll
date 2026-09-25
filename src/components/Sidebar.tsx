@@ -427,6 +427,7 @@ const copyToClipboard = async (text: string) => {
 
 const RESPONSE_HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6';
 const RESPONSE_CONTENT_SELECTOR = [
+    '[data-markdown-text-style]',
     '[data-message-author-role="assistant"]',
     '.row-start-2',
     '.font-claude-response',
@@ -435,6 +436,14 @@ const RESPONSE_CONTENT_SELECTOR = [
     'message-content .markdown',
     '.markdown',
 ].join(', ');
+
+const getChatGptTurnContent = (turn: Turn | undefined, role: 'user' | 'assistant'): HTMLElement | null => {
+    const element = turn?.element;
+    if (!element) return null;
+    const currentSelector = role === 'user' ? '[data-user-message-bubble]' : '[data-markdown-text-style]';
+    if (element.matches(currentSelector)) return element;
+    return element.querySelector<HTMLElement>(`[data-message-author-role="${role}"]`);
+};
 
 const getHeadingLevel = (heading: Heading): HeadingDepth => {
     if (isHeadingDepth(heading.outlineLevel)) return heading.outlineLevel;
@@ -1544,8 +1553,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             const MAX_WAIT = 2500; // Max wait time per block
 
             while (Date.now() - start < MAX_WAIT) {
-                const promptEl = block.prompt?.element?.querySelector('[data-message-author-role="user"]');
-                const answerEl = block.answer?.element?.querySelector('[data-message-author-role="assistant"]');
+                const promptEl = getChatGptTurnContent(block.prompt, 'user');
+                const answerEl = getChatGptTurnContent(block.answer, 'assistant');
 
                 const hasPrompt = !block.prompt || !block.prompt.element || (promptEl as HTMLElement)?.innerText?.trim().length > 0;
                 const hasAnswer = !block.answer?.element || (answerEl as HTMLElement)?.innerText?.trim().length > 0;
@@ -1688,10 +1697,10 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 }
 
                 // Use specific selectors to avoid capturing role headers
-                const promptEl = block.prompt?.element?.querySelector('[data-message-author-role="user"]');
+                const promptEl = getChatGptTurnContent(block.prompt, 'user');
                 const promptText = (promptEl as HTMLElement)?.innerText?.trim() || block.prompt?.text || '';
 
-                const answerEl = block.answer?.element?.querySelector('[data-message-author-role="assistant"]');
+                const answerEl = getChatGptTurnContent(block.answer, 'assistant');
                 const answerText = (answerEl as HTMLElement)?.innerText?.trim() || block.answer?.text || '';
 
                 const headings = block.headings?.map(h => h.innerText?.trim() || '').filter(Boolean) || [];
