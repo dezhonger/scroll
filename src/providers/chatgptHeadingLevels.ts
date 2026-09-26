@@ -30,6 +30,8 @@ const isIncreasingNumberedRun = (numbers: number[]) => (
  * - Chinese chapter labels (一、二、三…) are sibling top-level sections.
  * - A consecutive 1., 2., 3. run inside one chapter is one sibling level,
  *   using the first item's level as the intended depth.
+ * - A response beginning with a consecutive 1., 2., 3. chapter sequence has
+ *   top-level sections even if ChatGPT rendered some as h1 and others as h2.
  */
 export const inferChatGptOutlineLevels = (headings: HeadingOutlineInput[]) => {
     const levels = headings.map((heading) => getRawHeadingLevel(heading.tagName));
@@ -37,9 +39,25 @@ export const inferChatGptOutlineLevels = (headings: HeadingOutlineInput[]) => {
         .map((heading, index) => CHINESE_SECTION_PREFIX.test(heading.text.trim()) ? index : -1)
         .filter((index) => index >= 0);
 
-    // One matching title may be ordinary prose. Multiple numbered chapters
-    // provide enough evidence that this response has a semantic outline.
-    if (chapterIndexes.length < 2) return levels;
+    // One matching title may be ordinary prose. Without a Chinese chapter
+    // outline, only infer top-level Arabic chapters when numbering starts at
+    // the response's first heading and continues through at least three items.
+    if (chapterIndexes.length < 2) {
+        const numberedHeadings = headings
+            .map((heading, index) => ({ index, number: getArabicListNumber(heading.text) }))
+            .filter((entry): entry is { index: number; number: number } => entry.number !== null);
+        const run: number[] = [];
+        if (numberedHeadings[0]?.index === 0) {
+            for (const { index, number } of numberedHeadings) {
+                if (number !== run.length + 1) break;
+                run.push(index);
+            }
+        }
+        if (run.length >= 3) {
+            run.forEach((index) => { levels[index] = 1; });
+        }
+        return levels;
+    }
 
     chapterIndexes.forEach((chapterIndex) => {
         levels[chapterIndex] = 1;

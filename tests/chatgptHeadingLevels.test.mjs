@@ -38,6 +38,46 @@ test('keeps ordinary heading levels literal without multiple chapter markers', (
     assert.deepEqual(inferChatGptOutlineLevels(headings), [2, 1, 3]);
 });
 
+test('treats a numbered response with mixed h1 and h2 chapters as one level', () => {
+    const headings = [
+        { tagName: 'H2', text: '1. 形式化题意' },
+        { tagName: 'H2', text: '2. 输入输出格式' },
+        { tagName: 'H2', text: '3. 样例如何得到' },
+        { tagName: 'H3', text: '询问 [2,6]' },
+        { tagName: 'H1', text: '4. 解题思路' },
+        { tagName: 'H2', text: '5. 一个询问如何转化' },
+        { tagName: 'H3', text: '特殊情况' },
+        { tagName: 'H1', text: '6. 代码' },
+        { tagName: 'H1', text: '7. 正确性说明' },
+        { tagName: 'H1', text: '8. 复杂度' },
+        { tagName: 'H2', text: '9. 本题知识点' },
+    ];
+
+    assert.deepEqual(inferChatGptOutlineLevels(headings), [1, 1, 1, 3, 1, 1, 3, 1, 1, 1, 1]);
+});
+
+test('does not promote numbered subsections below a leading title', () => {
+    const headings = [
+        { tagName: 'H1', text: 'Overview' },
+        { tagName: 'H2', text: '1. First part' },
+        { tagName: 'H2', text: '2. Second part' },
+        { tagName: 'H2', text: '3. Third part' },
+    ];
+
+    assert.deepEqual(inferChatGptOutlineLevels(headings), [1, 2, 2, 2]);
+});
+
+test('does not infer a top-level run from skipped or repeated numbers', () => {
+    const headings = [
+        { tagName: 'H2', text: '1. First part' },
+        { tagName: 'H3', text: '1. Nested part' },
+        { tagName: 'H2', text: '2. Second part' },
+        { tagName: 'H1', text: '3. Separate part' },
+    ];
+
+    assert.deepEqual(inferChatGptOutlineLevels(headings), [2, 3, 2, 1]);
+});
+
 test('does not flatten a non-increasing numbered hierarchy', () => {
     const headings = [
         { tagName: 'H1', text: '一、Overview' },
