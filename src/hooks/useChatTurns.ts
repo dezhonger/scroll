@@ -15,6 +15,11 @@ const TURN_SELECTORS: Record<Provider['name'], string> = {
 const hasTurns = (provider: Provider, root: ParentNode) =>
     root.querySelector(TURN_SELECTORS[provider.name]) !== null;
 
+const isVisibleChatContainer = (element: HTMLElement) => {
+    const { width, height } = element.getBoundingClientRect();
+    return width > 0 && height > 0;
+};
+
 export function useChatTurns() {
     const [turns, setTurns] = useState<Turn[]>([]);
     const [provider, setProvider] = useState<Provider | null>(null);
@@ -45,8 +50,9 @@ export function useChatTurns() {
 
         const turnSelector = TURN_SELECTORS[provider.name];
         const hasAnyTurns = hasTurns(provider, document);
+        const isChatGpt = provider.name === 'chatgpt';
 
-        if (container && container.isConnected) {
+        if (container && container.isConnected && (!isChatGpt || isVisibleChatContainer(container))) {
             if (hasTurns(provider, container) || !hasAnyTurns) {
                 return container;
             }
@@ -57,6 +63,7 @@ export function useChatTurns() {
         let bestCount = 0;
 
         candidates.forEach((candidate) => {
+            if (isChatGpt && !isVisibleChatContainer(candidate)) return;
             const count = candidate.querySelectorAll(turnSelector).length;
             if (count > bestCount) {
                 bestCount = count;
@@ -68,15 +75,38 @@ export function useChatTurns() {
             return bestCandidate;
         }
 
+        if (isChatGpt) {
+            // ChatGPT keeps other conversations mounted in zero-sized panels.
+            // Wait for the visible chat to hydrate instead of parsing a hidden one.
+            return candidates.find(isVisibleChatContainer) || null;
+        }
+
         return (document.querySelector('main') as HTMLElement | null) || document.body;
     }, [provider, container]);
 
     useEffect(() => {
         if (!provider) return;
 
+        const observedCandidates = new WeakSet<HTMLElement>();
+        const resizeObserver = provider.name === 'chatgpt' && typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver(() => checkContainer())
+            : null;
+
         const checkContainer = () => {
+            // Visibility can change without adding or removing DOM nodes.
+            if (resizeObserver) {
+                document.querySelectorAll<HTMLElement>(provider.scrollContainerSelector).forEach((candidate) => {
+                    if (observedCandidates.has(candidate)) return;
+                    observedCandidates.add(candidate);
+                    resizeObserver.observe(candidate);
+                });
+            }
+
             const found = findContainer();
-            if (found && found !== container) {
+            if (found !== container) {
+                headingCacheRef.current.clear();
+                turnTextCacheRef.current.clear();
+                setTurns([]);
                 setContainer(found);
             }
         };
@@ -86,7 +116,10 @@ export function useChatTurns() {
         bodyObserverRef.current = new MutationObserver(checkContainer);
         bodyObserverRef.current.observe(document.body, { childList: true, subtree: true });
 
-        return () => bodyObserverRef.current?.disconnect();
+        return () => {
+            bodyObserverRef.current?.disconnect();
+            resizeObserver?.disconnect();
+        };
     }, [provider, container, findContainer]);
 
     useEffect(() => {
