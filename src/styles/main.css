@@ -656,6 +656,30 @@
   opacity: 0.42;
 }
 
+.scroll-pro-heading-nav {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.scroll-pro-heading-nav-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.scroll-pro-heading-nav-btn {
+  padding: 4px 6px;
+}
+
+.scroll-pro-heading-nav-position {
+  min-width: 38px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .scroll-pro-search {
   position: relative;
 }

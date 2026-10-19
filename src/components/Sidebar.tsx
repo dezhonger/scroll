@@ -622,6 +622,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const manualSidebarNavigationUntilRef = useRef(0);
     const previousViewLevelRef = useRef(viewLevel);
     const previousNewestBlockKeyRef = useRef<string | null>(null);
+    const lastHeadingNavigationContextRef = useRef<string | null>(null);
 
     const turnsRef = useRef(turns);
     useEffect(() => { turnsRef.current = turns; }, [turns]);
@@ -1344,6 +1345,31 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         return map;
     }, [focusableItems]);
 
+    const headingNavigationItems = useMemo(() => focusableItems.flatMap((item, focusIndex) => (
+        item.kind === 'heading' && item.heading
+            ? [{ heading: item.heading, focusIndex }]
+            : []
+    )), [focusableItems]);
+
+    const currentHeadingNavigationIndex = useMemo(() => {
+        let currentIndex = -1;
+        headingNavigationItems.forEach((item, index) => {
+            if (item.focusIndex <= focusedIndex) currentIndex = index;
+        });
+        return currentIndex;
+    }, [focusedIndex, headingNavigationItems]);
+
+    const navigateHeading = useCallback((direction: -1 | 1) => {
+        const nextIndex = currentHeadingNavigationIndex + direction;
+        const target = headingNavigationItems[nextIndex];
+        if (!target?.heading.element?.isConnected) return;
+
+        manualSidebarNavigationUntilRef.current = Date.now() + 900;
+        setFocusedIndex(target.focusIndex);
+        hideOverflowTooltip();
+        scrollToElement(target.heading.element);
+    }, [currentHeadingNavigationIndex, headingNavigationItems, hideOverflowTooltip]);
+
     const getVisibleFocusKey = useCallback((block: Block, visibleTurn: Turn) => {
         if (viewLevel === 1) return block.key;
 
@@ -1850,6 +1876,30 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         }
         return closestIndex;
     }, [turns]);
+
+    useLayoutEffect(() => {
+        const context = JSON.stringify([viewLevel, headingDepth, search, isOpen, isPaused]);
+        if (lastHeadingNavigationContextRef.current === context) return;
+        if (!isOpen || isPaused || viewLevel === 1) {
+            lastHeadingNavigationContextRef.current = context;
+            return;
+        }
+
+        const visibleTurnIndex = findVisibleTurnIndex();
+        if (visibleTurnIndex < 0) return;
+        const visibleTurn = turns[visibleTurnIndex];
+        const blockIndex = findBlockIndexForTurn(visibleTurn);
+        if (blockIndex < 0) return;
+
+        const focusKey = getVisibleFocusKey(blocks[blockIndex], visibleTurn);
+        const nextFocusedIndex = focusIndexByKey.get(focusKey);
+        if (nextFocusedIndex === undefined) return;
+
+        lastHeadingNavigationContextRef.current = context;
+        if (nextFocusedIndex !== focusedIndexRef.current) {
+            setFocusedIndex(nextFocusedIndex);
+        }
+    }, [blocks, findBlockIndexForTurn, findVisibleTurnIndex, focusIndexByKey, getVisibleFocusKey, headingDepth, isOpen, isPaused, search, turns, viewLevel]);
 
     const syncLatestToVisibleTurn = useCallback(() => {
         if (
@@ -2896,6 +2946,37 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                         );
                                     })}
                                 </div>
+                            </div>
+                        )}
+
+                        {viewLevel !== 1 && (
+                            <div className="scroll-pro-heading-nav" role="group" aria-label="Heading navigation">
+                                <span className="scroll-pro-heading-nav-label">Sections</span>
+                                <button
+                                    type="button"
+                                    className="scroll-pro-latest-nav-btn scroll-pro-heading-nav-btn"
+                                    aria-label="Previous heading"
+                                    title="Previous visible heading"
+                                    disabled={currentHeadingNavigationIndex <= 0}
+                                    onClick={() => navigateHeading(-1)}
+                                >
+                                    <span aria-hidden="true">←</span>
+                                    <span>Previous</span>
+                                </button>
+                                <span className="scroll-pro-heading-nav-position" aria-live="polite">
+                                    {currentHeadingNavigationIndex + 1} / {headingNavigationItems.length}
+                                </span>
+                                <button
+                                    type="button"
+                                    className="scroll-pro-latest-nav-btn scroll-pro-heading-nav-btn"
+                                    aria-label="Next heading"
+                                    title="Next visible heading"
+                                    disabled={currentHeadingNavigationIndex >= headingNavigationItems.length - 1}
+                                    onClick={() => navigateHeading(1)}
+                                >
+                                    <span>Next</span>
+                                    <span aria-hidden="true">→</span>
+                                </button>
                             </div>
                         )}
 
