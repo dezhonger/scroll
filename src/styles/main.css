@@ -600,6 +600,18 @@
   gap: 8px;
 }
 
+.scroll-pro-heading-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scroll-pro-heading-mode-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
 .scroll-pro-heading-depth-label {
   display: flex;
   min-width: 0;

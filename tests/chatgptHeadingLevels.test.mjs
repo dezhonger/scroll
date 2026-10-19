@@ -89,3 +89,56 @@ test('does not flatten a non-increasing numbered hierarchy', () => {
 
     assert.deepEqual(inferChatGptOutlineLevels(headings), [1, 2, 3, 3, 1]);
 });
+
+test('keeps twelve numbered chapters above Chinese subsections in a titled answer', () => {
+    const headings = [{ tagName: 'H1', text: '2026-10-19 Daily Knowledge Explorer｜每日领域知识' }];
+    for (let chapter = 1; chapter <= 12; chapter += 1) {
+        headings.push(
+            { tagName: 'H1', text: `${chapter}. ${chapter === 1 ? '学校知识复习' : chapter === 2 ? '世界著名大学' : `主题 ${chapter}`}｜每日一课` },
+            { tagName: 'H1', text: '一、主要概念' },
+            { tagName: 'H3', text: '1. 细节' },
+            { tagName: 'H1', text: '2. 编号子项' },
+            { tagName: 'H1', text: '二、延伸阅读' },
+        );
+    }
+    headings.push({ tagName: 'H1', text: '今日学习进度总结' });
+
+    const levels = inferChatGptOutlineLevels(headings);
+    assert.equal(levels[0], 0);
+    assert.deepEqual(levels.filter((level) => level === 1).length, 13);
+    assert.deepEqual(levels.slice(1, 6), [1, 2, 3, 2, 2]);
+    assert.equal(levels.at(-1), 1);
+});
+
+test('does not treat nested numbered sections below a leading title as chapters', () => {
+    const headings = [
+        { tagName: 'H1', text: 'Overview' },
+        { tagName: 'H2', text: '1. Part one' },
+        { tagName: 'H3', text: '1. Detail' },
+        { tagName: 'H2', text: '2. Part two' },
+        { tagName: 'H2', text: '3. Part three' },
+    ];
+    assert.deepEqual(inferChatGptOutlineLevels(headings), [1, 2, 3, 2, 2]);
+});
+
+test('finds the chapter sequence when one chapter has no title separator', () => {
+    const headings = [
+        { tagName: 'H1', text: 'Daily Knowledge Explorer｜每日领域知识' },
+        { tagName: 'H1', text: '1. 学校知识复习｜信息技术' },
+        { tagName: 'H1', text: '一、字符编码' },
+        { tagName: 'H1', text: '2. 世界著名大学｜浙江大学' },
+        { tagName: 'H3', text: '1. 竺可桢' },
+        { tagName: 'H3', text: '2. 苏步青' },
+        { tagName: 'H1', text: '3. 世界国家与城市｜捷克' },
+        { tagName: 'H1', text: '4. 中国城市｜长沙' },
+        { tagName: 'H1', text: '5. 汽车品牌与车标｜Mercedes-Benz' },
+        { tagName: 'H1', text: '6. 历史知识' },
+        { tagName: 'H1', text: '一、历史背景' },
+        { tagName: 'H1', text: '7. 语文知识｜杜甫' },
+        { tagName: 'H1', text: '今日学习进度总结' },
+    ];
+
+    assert.deepEqual(inferChatGptOutlineLevels(headings), [
+        0, 1, 2, 1, 3, 3, 1, 1, 1, 1, 2, 1, 1,
+    ]);
+});

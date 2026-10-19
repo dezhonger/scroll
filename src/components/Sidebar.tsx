@@ -21,6 +21,7 @@ const LINE_CLAMP_KEY = 'scroll-pro-line-clamp';
 const COPY_MARKDOWN_KEY = 'scroll-pro-copy-markdown';
 const CHATGPT_CAPTURE_CONSENT_KEY = 'scroll-pro-chatgpt-capture-consent';
 const HEADING_DEPTH_KEY = 'scroll-pro-heading-depth';
+const HEADING_MODE_KEY = 'scroll-pro-heading-mode';
 const SIDEBAR_WIDTH_KEY = 'scroll-pro-sidebar-width';
 const SIDEBAR_POSITION_KEY_PREFIX = 'scroll-pro-sidebar-position';
 const SIDEBAR_TOGGLE_SIZE = 42;
@@ -34,12 +35,15 @@ const SIDEBAR_MAX_WIDTH = 640;
 const SIDEBAR_MAX_VIEWPORT_RATIO = 0.5;
 
 type HeadingDepth = 1 | 2 | 3 | 4 | 5 | 6;
+type HeadingMode = 'smart' | 'raw';
 
 const HEADING_DEPTH_OPTIONS: HeadingDepth[] = [1, 2, 3, 4, 5, 6];
 
 const isHeadingDepth = (value: unknown): value is HeadingDepth => (
     typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 6
 );
+
+const isHeadingMode = (value: unknown): value is HeadingMode => value === 'smart' || value === 'raw';
 
 const isSidebarWidth = (value: unknown): value is number => (
     typeof value === 'number' && Number.isFinite(value)
@@ -445,8 +449,8 @@ const getChatGptTurnContent = (turn: Turn | undefined, role: 'user' | 'assistant
     return element.querySelector<HTMLElement>(`[data-message-author-role="${role}"]`);
 };
 
-const getHeadingLevel = (heading: Heading): HeadingDepth => {
-    if (isHeadingDepth(heading.outlineLevel)) return heading.outlineLevel;
+const getHeadingLevel = (heading: Heading, mode: HeadingMode): HeadingDepth => {
+    if (mode === 'smart' && isHeadingDepth(heading.outlineLevel)) return heading.outlineLevel;
     const match = (heading.tagName || heading.element.tagName).match(/^H([1-6])$/i);
     const parsed = match ? Number(match[1]) : 6;
     return isHeadingDepth(parsed) ? parsed : 6;
@@ -496,7 +500,7 @@ const serializeNodeToPlainText = (node: Node): string => {
     return children;
 };
 
-const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: boolean) => {
+const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: boolean, mode: HeadingMode) => {
     const headingElement = heading.element;
     const contentRoot = headingElement.closest<HTMLElement>(RESPONSE_CONTENT_SELECTOR) || turn.element;
     if (!contentRoot.contains(headingElement)) return '';
@@ -507,12 +511,12 @@ const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: b
     const currentIndex = responseHeadings.indexOf(headingElement);
     if (currentIndex < 0) return '';
 
-    const currentLevel = getHeadingLevel(heading);
+    const currentLevel = getHeadingLevel(heading, mode);
     const nextBoundary = responseHeadings
         .slice(currentIndex + 1)
         .find((candidate) => {
             const parsedHeading = turn.headings.find((heading) => heading.element === candidate);
-            if (parsedHeading) return getHeadingLevel(parsedHeading) <= currentLevel;
+            if (parsedHeading) return getHeadingLevel(parsedHeading, mode) <= currentLevel;
             const match = candidate.tagName.match(/^H([1-6])$/i);
             const candidateLevel = match ? Number(match[1]) : 6;
             return candidateLevel <= currentLevel;
@@ -553,6 +557,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const [overflowTooltip, setOverflowTooltip] = useState<OverflowTooltip | null>(null);
     const [progress, setProgress] = useState(0);
     const [headingDepth, setHeadingDepth] = useState<HeadingDepth>(4);
+    const [headingMode, setHeadingMode] = useState<HeadingMode>('smart');
     const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
     const [isResizing, setIsResizing] = useState(false);
     const [lineClamp, setLineClamp] = useState<number>(() => getLineClamp());
@@ -685,6 +690,9 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 setHeadingDepth(nextValue);
             }
 
+            const nextMode = changes[HEADING_MODE_KEY]?.newValue;
+            if (isHeadingMode(nextMode)) setHeadingMode(nextMode);
+
             const nextWidth = changes[SIDEBAR_WIDTH_KEY]?.newValue;
             if (isSidebarWidth(nextWidth)) {
                 setSidebarWidth(clampPreferredSidebarWidth(nextWidth));
@@ -692,10 +700,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         };
 
         try {
-            chrome.storage.local.get([HEADING_DEPTH_KEY, SIDEBAR_WIDTH_KEY], (result) => {
+            chrome.storage.local.get([HEADING_DEPTH_KEY, HEADING_MODE_KEY, SIDEBAR_WIDTH_KEY], (result) => {
                 const savedDepth = result[HEADING_DEPTH_KEY];
                 if (isHeadingDepth(savedDepth)) {
                     setHeadingDepth(savedDepth);
+                }
+                if (isHeadingMode(result[HEADING_MODE_KEY])) {
+                    setHeadingMode(result[HEADING_MODE_KEY]);
                 }
                 const savedWidth = result[SIDEBAR_WIDTH_KEY];
                 if (isSidebarWidth(savedWidth)) {
@@ -713,6 +724,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         setHeadingDepth(depth);
         try {
             chrome.storage.local.set({ [HEADING_DEPTH_KEY]: depth });
+        } catch {}
+    }, []);
+
+    const updateHeadingMode = useCallback((mode: HeadingMode) => {
+        setHeadingMode(mode);
+        try {
+            chrome.storage.local.set({ [HEADING_MODE_KEY]: mode });
         } catch {}
     }, []);
 
@@ -1091,7 +1109,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     }, [copyWithMarkdown]);
 
     const copyHeadingSection = useCallback(async (sectionKey: string, turn: Turn, heading: Heading) => {
-        const text = getHeadingSectionCopyText(turn, heading, copyWithMarkdown);
+        const text = getHeadingSectionCopyText(turn, heading, copyWithMarkdown, headingMode);
         if (!text) {
             showToast('Unable to copy this section', 'error');
             return;
@@ -1111,11 +1129,15 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             copiedSectionTimerRef.current = null;
         }, 1400);
         showToast(copyWithMarkdown ? 'Section copied (markdown)' : 'Section copied');
-    }, [copyWithMarkdown, showToast]);
+    }, [copyWithMarkdown, headingMode, showToast]);
 
     const getAssistantInitiatedTitle = useCallback((turn: Turn) => {
         const timeLabel = turn.timeLabel?.trim();
         const contextLabel = turn.contextLabel?.trim();
+        const documentTitle = turn.headings[0]?.outlineLevel === 0
+            ? turn.headings[0].innerText.trim()
+            : '';
+        if (documentTitle) return timeLabel ? `${timeLabel} · ${documentTitle}` : documentTitle;
         if (timeLabel && contextLabel) return `${timeLabel} · ${contextLabel}`;
         if (contextLabel) return contextLabel;
 
@@ -1264,10 +1286,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             .map((heading, index) => ({
                 heading,
                 index,
-                level: getHeadingLevel(heading),
+                level: getHeadingLevel(heading, headingMode),
             }))
-            .filter((entry) => entry.level <= headingDepth)
-    ), [headingDepth]);
+            .filter((entry) => (headingMode === 'raw' || entry.heading.outlineLevel !== 0)
+                && entry.level <= headingDepth)
+    ), [headingDepth, headingMode]);
 
     const normalizedSearch = search.trim().toLowerCase();
 
@@ -1298,11 +1321,12 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         let maximum = 0;
         filteredBlocks.forEach((block) => {
             block.headings.forEach((heading) => {
-                maximum = Math.max(maximum, getHeadingLevel(heading));
+                if (headingMode === 'smart' && heading.outlineLevel === 0) return;
+                maximum = Math.max(maximum, getHeadingLevel(heading, headingMode));
             });
         });
         return maximum > 0 && isHeadingDepth(maximum) ? maximum : null;
-    }, [filteredBlocks]);
+    }, [filteredBlocks, headingMode]);
 
     type FocusItem =
         | { key: string; kind: 'block'; block: Block }
@@ -1878,7 +1902,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     }, [turns]);
 
     useLayoutEffect(() => {
-        const context = JSON.stringify([viewLevel, headingDepth, search, isOpen, isPaused]);
+        const context = JSON.stringify([viewLevel, headingDepth, headingMode, search, isOpen, isPaused]);
         if (lastHeadingNavigationContextRef.current === context) return;
         if (!isOpen || isPaused || viewLevel === 1) {
             lastHeadingNavigationContextRef.current = context;
@@ -1899,7 +1923,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         if (nextFocusedIndex !== focusedIndexRef.current) {
             setFocusedIndex(nextFocusedIndex);
         }
-    }, [blocks, findBlockIndexForTurn, findVisibleTurnIndex, focusIndexByKey, getVisibleFocusKey, headingDepth, isOpen, isPaused, search, turns, viewLevel]);
+    }, [blocks, findBlockIndexForTurn, findVisibleTurnIndex, focusIndexByKey, getVisibleFocusKey, headingDepth, headingMode, isOpen, isPaused, search, turns, viewLevel]);
 
     const syncLatestToVisibleTurn = useCallback(() => {
         if (
@@ -2945,6 +2969,32 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                             </button>
                                         );
                                     })}
+                                </div>
+                            </div>
+                        )}
+
+                        {viewLevel !== 1 && providerName === 'chatgpt' && (
+                            <div className="scroll-pro-heading-mode" role="group" aria-label="Heading hierarchy mode">
+                                <span className="scroll-pro-heading-mode-label">Hierarchy</span>
+                                <div className="scroll-pro-heading-depth-options">
+                                    <button
+                                        type="button"
+                                        className={`scroll-pro-heading-depth-btn ${headingMode === 'smart' ? 'is-active' : ''}`}
+                                        aria-pressed={headingMode === 'smart'}
+                                        title="Group clearly numbered chapters into a semantic outline"
+                                        onClick={() => updateHeadingMode('smart')}
+                                    >
+                                        Smart
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`scroll-pro-heading-depth-btn ${headingMode === 'raw' ? 'is-active' : ''}`}
+                                        aria-pressed={headingMode === 'raw'}
+                                        title="Use the headings exactly as rendered by ChatGPT"
+                                        onClick={() => updateHeadingMode('raw')}
+                                    >
+                                        Raw H tags
+                                    </button>
                                 </div>
                             </div>
                         )}
