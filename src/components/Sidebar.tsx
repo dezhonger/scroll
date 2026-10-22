@@ -589,6 +589,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const [sidebarPosition, setSidebarPosition] = useState<SidebarPosition>(() => loadSidebarPosition(storageKey));
     const [isDragging, setIsDragging] = useState(false);
     const itemRefs = useRef<Map<string, HTMLElement>>(new Map());
+    const sidebarListRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const sidebarShellRef = useRef<HTMLDivElement | null>(null);
     const toggleButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -621,6 +622,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const userInteractionRef = useRef(false);
     const isHoveringSidebar = useRef(false);
     const isSmoothPursuit = useRef(false);
+    const shouldPreviewFollowingHeadingsRef = useRef(false);
     const copiedSectionTimerRef = useRef<number | null>(null);
     const suppressLatestScrollSyncRef = useRef(false);
     const latestScrollSyncTimerRef = useRef<number | null>(null);
@@ -1389,6 +1391,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         if (!target?.heading.element?.isConnected) return;
 
         manualSidebarNavigationUntilRef.current = Date.now() + 900;
+        shouldPreviewFollowingHeadingsRef.current = true;
         setFocusedIndex(target.focusIndex);
         hideOverflowTooltip();
         scrollToElement(target.heading.element);
@@ -2402,8 +2405,19 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         if (focusedIndex < 0) return;
         const item = focusableItems[focusedIndex];
         if (!item) return;
+        const shouldPreviewFollowingHeadings = shouldPreviewFollowingHeadingsRef.current;
+        shouldPreviewFollowingHeadingsRef.current = false;
         const el = itemRefs.current.get(item.key);
         if (el) {
+            if (shouldPreviewFollowingHeadings && sidebarListRef.current) {
+                const list = sidebarListRef.current;
+                const itemRect = el.getBoundingClientRect();
+                const listRect = list.getBoundingClientRect();
+                const itemCenter = itemRect.top - listRect.top + list.scrollTop + itemRect.height / 2;
+                list.scrollTo({ top: itemCenter - list.clientHeight * 0.35, behavior: 'smooth' });
+                return;
+            }
+
             const behavior = userInteractionRef.current || isSmoothPursuit.current ? 'smooth' : 'auto';
 
             const block = isSmoothPursuit.current ? 'center' : 'nearest';
@@ -3046,7 +3060,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                         </div>
                     </div>
 
-                    <div className="scroll-pro-sidebar-list" onScroll={hideOverflowTooltip}>
+                    <div className="scroll-pro-sidebar-list" ref={sidebarListRef} onScroll={hideOverflowTooltip}>
                         {(() => {
                             const term = search.trim().toLowerCase();
                             const showExport = term === '/export' || term === '/e' || term === '/ex';
