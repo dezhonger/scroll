@@ -1,5 +1,10 @@
+export type HeadingPart =
+    | { kind: 'text'; value: string }
+    | { kind: 'math'; value: string; mathml?: string };
+
 export interface Heading {
     innerText: string;
+    parts?: HeadingPart[];
     element: HTMLElement;
     tagName: string;
     outlineLevel?: number;

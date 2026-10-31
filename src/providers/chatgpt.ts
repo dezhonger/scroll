@@ -1,18 +1,53 @@
-import { Heading, Provider, Turn } from '../types';
+import { Heading, HeadingPart, Provider, Turn } from '../types';
 import { serializeNodeToMarkdown } from '../lib/markdownUtil';
 import { inferChatGptOutlineLevels } from './chatgptHeadingLevels';
 
+const getHeadingParts = (node: Node): HeadingPart[] => {
+    if (node.nodeType === Node.TEXT_NODE) {
+        return [{ kind: 'text', value: node.textContent || '' }];
+    }
+    if (!(node instanceof HTMLElement)) return [];
+
+    // ChatGPT includes MathML, TeX annotation, and visual KaTeX markup for
+    // one formula. Reading innerText collects more than one representation.
+    const mathSource = node.getAttribute('data-math-source') ||
+        (node.classList.contains('katex')
+            ? node.querySelector('annotation[encoding="application/x-tex"]')?.textContent
+            : null);
+    if (mathSource) {
+        const math = node.querySelector('math');
+        const firstChild = math?.firstElementChild;
+        const expression = firstChild?.localName === 'semantics'
+            ? firstChild.firstElementChild
+            : firstChild;
+        return [{
+            kind: 'math',
+            value: mathSource,
+            // The annotation repeats the TeX source; only the expression is
+            // needed for native MathML rendering in the sidebar.
+            mathml: expression
+                ? `<math xmlns="http://www.w3.org/1998/Math/MathML">${expression.outerHTML}</math>`
+                : undefined,
+        }];
+    }
+    if (node.getAttribute('aria-hidden') === 'true') return [];
+    return Array.from(node.childNodes).flatMap(getHeadingParts);
+};
+
 const getHeadings = (content: HTMLElement): Heading[] => {
     const elements = Array.from(content.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
-    const outlineLevels = inferChatGptOutlineLevels(elements.map((heading) => ({
-        text: heading.innerText.trim(),
+    const headingParts = elements.map(getHeadingParts);
+    const headingTexts = headingParts.map((parts) => parts.map((part) => part.value).join('').replace(/\s+/g, ' ').trim());
+    const outlineLevels = inferChatGptOutlineLevels(elements.map((heading, index) => ({
+        text: headingTexts[index],
         tagName: heading.tagName,
     })));
 
     return elements.map((heading, index) => {
-        const innerText = heading.innerText.trim();
+        const innerText = headingTexts[index];
         return {
             innerText: innerText || `Section ${index + 1}`,
+            parts: headingParts[index],
             element: heading,
             tagName: heading.tagName,
             outlineLevel: outlineLevels[index],

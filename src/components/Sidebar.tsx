@@ -133,6 +133,7 @@ const TruncatedTitle = ({ text, onShowTooltip, onHideTooltip }: TruncatedTitlePr
 
 type TruncatedSubheadingProps = {
     text: string;
+    parts?: Heading['parts'];
     level: HeadingDepth;
     className: string;
     isFocused: boolean;
@@ -144,8 +145,20 @@ type TruncatedSubheadingProps = {
     onHideTooltip: () => void;
 };
 
+const sanitizedMathCache = new Map<string, string>();
+
+const sanitizeHeadingMath = (mathml: string) => {
+    const cached = sanitizedMathCache.get(mathml);
+    if (cached) return cached;
+    const html = DOMPurify.sanitize(mathml, { USE_PROFILES: { mathMl: true } });
+    if (sanitizedMathCache.size >= 256) sanitizedMathCache.clear();
+    sanitizedMathCache.set(mathml, html);
+    return html;
+};
+
 const TruncatedSubheading = ({
     text,
+    parts,
     level,
     className,
     isFocused,
@@ -183,7 +196,14 @@ const TruncatedSubheading = ({
                 onFocus={showTooltip}
                 onBlur={onHideTooltip}
             >
-                {text}
+                {parts?.length ? parts.map((part, index) => part.kind === 'math' && part.mathml ? (
+                    <span
+                        key={index}
+                        role="math"
+                        aria-label={part.value}
+                        dangerouslySetInnerHTML={{ __html: sanitizeHeadingMath(part.mathml) }}
+                    />
+                ) : <span key={index}>{part.value}</span>) : text}
             </button>
             <button
                 type="button"
@@ -3152,6 +3172,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                             <TruncatedSubheading
                                                                 key={headingKey}
                                                                 text={heading.innerText}
+                                                                parts={heading.parts}
                                                                 level={level}
                                                                 isFocused={focusedIndex === headingFocusIndex}
                                                                 isCopied={copiedSectionKey === headingKey}
