@@ -16,6 +16,7 @@ export interface Turn {
     turnId?: string; // Provider-specific stable ID (e.g., ChatGPT's data-turn-id)
     role: 'user' | 'assistant';
     element: HTMLElement;
+    contentRange?: Range; // A ChatGPT unit can contain several assistant messages.
     text: string;
     headings: Heading[];
     contextLabel?: string; // Provider context, e.g. a scheduled task name

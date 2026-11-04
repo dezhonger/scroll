@@ -8,6 +8,7 @@ import { claude } from '../providers/claude';
 import { gemini } from '../providers/gemini';
 import { showToast as emitToast, type ToastType } from '../services/toast';
 import { serializeNodeToMarkdown, renderMarkdownToHtml, stripMarkdown } from '../lib/markdownUtil';
+import { getTurnPlainText, getTurnRect, serializeTurnToMarkdown } from '../lib/turnContent';
 import { downloadFile } from '../lib/download';
 import { generateExportFilename, getChatTitle } from '../lib/exportFilenames';
 import { getPdfStyles, getPdfFooter, formatPdfDate } from '../lib/pdfStyles';
@@ -461,14 +462,6 @@ const RESPONSE_CONTENT_SELECTOR = [
     '.markdown',
 ].join(', ');
 
-const getChatGptTurnContent = (turn: Turn | undefined, role: 'user' | 'assistant'): HTMLElement | null => {
-    const element = turn?.element;
-    if (!element) return null;
-    const currentSelector = role === 'user' ? '[data-user-message-bubble]' : '[data-markdown-text-style]';
-    if (element.matches(currentSelector)) return element;
-    return element.querySelector<HTMLElement>(`[data-message-author-role="${role}"]`);
-};
-
 const getHeadingLevel = (heading: Heading, mode: HeadingMode): HeadingDepth => {
     if (mode === 'smart' && isHeadingDepth(heading.outlineLevel)) return heading.outlineLevel;
     const match = (heading.tagName || heading.element.tagName).match(/^H([1-6])$/i);
@@ -525,9 +518,9 @@ const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: b
     const contentRoot = headingElement.closest<HTMLElement>(RESPONSE_CONTENT_SELECTOR) || turn.element;
     if (!contentRoot.contains(headingElement)) return '';
 
-    const responseHeadings = Array.from(
-        contentRoot.querySelectorAll<HTMLElement>(RESPONSE_HEADING_SELECTOR)
-    );
+    const responseHeadings = turn.contentRange
+        ? turn.headings.map((entry) => entry.element)
+        : Array.from(contentRoot.querySelectorAll<HTMLElement>(RESPONSE_HEADING_SELECTOR));
     const currentIndex = responseHeadings.indexOf(headingElement);
     if (currentIndex < 0) return '';
 
@@ -547,7 +540,11 @@ const getHeadingSectionCopyText = (turn: Turn, heading: Heading, withMarkdown: b
     if (nextBoundary) {
         range.setEndBefore(nextBoundary);
     } else {
-        range.setEnd(contentRoot, contentRoot.childNodes.length);
+        if (turn.contentRange) {
+            range.setEnd(turn.contentRange.endContainer, turn.contentRange.endOffset);
+        } else {
+            range.setEnd(contentRoot, contentRoot.childNodes.length);
+        }
     }
 
     const wrapper = headingElement.ownerDocument.createElement('div');
@@ -1125,7 +1122,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         if (!turn) return '';
         if (!copyWithMarkdown) return turn.text || '';
         if (!turn.element) return turn.text || '';
-        const raw = serializeNodeToMarkdown(turn.element);
+        const raw = serializeTurnToMarkdown(turn);
         const compact = raw.replace(/\n{3,}/g, '\n\n').trim();
         return compact || turn.text || '';
     }, [copyWithMarkdown]);
@@ -1451,11 +1448,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const getCurrentExportBlocks = useCallback((): ExportBlock[] => {
         return blocks.map((block) => {
             const promptText = block.prompt?.element
-                ? serializeNodeToMarkdown(block.prompt.element)
+                ? serializeTurnToMarkdown(block.prompt)
                 : (block.prompt?.text || '');
 
             const answerText = block.answer?.element
-                ? serializeNodeToMarkdown(block.answer.element)
+                ? serializeTurnToMarkdown(block.answer)
                 : (block.answer?.text || '');
 
             return {
@@ -1626,11 +1623,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             const MAX_WAIT = 2500; // Max wait time per block
 
             while (Date.now() - start < MAX_WAIT) {
-                const promptEl = getChatGptTurnContent(block.prompt, 'user');
-                const answerEl = getChatGptTurnContent(block.answer, 'assistant');
-
-                const hasPrompt = !block.prompt || !block.prompt.element || (promptEl as HTMLElement)?.innerText?.trim().length > 0;
-                const hasAnswer = !block.answer?.element || (answerEl as HTMLElement)?.innerText?.trim().length > 0;
+                const hasPrompt = !block.prompt || !block.prompt.element || getTurnPlainText(block.prompt).length > 0;
+                const hasAnswer = !block.answer?.element || getTurnPlainText(block.answer).length > 0;
 
                 if (hasPrompt && hasAnswer) {
                     await sleep(50);
@@ -1769,17 +1763,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     await waitForHydration(block);
                 }
 
-                // Use specific selectors to avoid capturing role headers
-                const promptEl = getChatGptTurnContent(block.prompt, 'user');
-                const promptText = (promptEl as HTMLElement)?.innerText?.trim() || block.prompt?.text || '';
-
-                const answerEl = getChatGptTurnContent(block.answer, 'assistant');
-                const answerText = (answerEl as HTMLElement)?.innerText?.trim() || block.answer?.text || '';
+                const promptText = block.prompt ? getTurnPlainText(block.prompt) : '';
+                const answerText = block.answer ? getTurnPlainText(block.answer) : '';
 
                 const headings = block.headings?.map(h => h.innerText?.trim() || '').filter(Boolean) || [];
 
-                const promptMarkdown = promptEl ? serializeNodeToMarkdown(promptEl) : promptText;
-                const answerMarkdown = answerEl ? serializeNodeToMarkdown(answerEl) : answerText;
+                const promptMarkdown = block.prompt ? serializeTurnToMarkdown(block.prompt) : promptText;
+                const answerMarkdown = block.answer ? serializeTurnToMarkdown(block.answer) : answerText;
 
                 exportBlocks.push({
                     kind: block.kind,
@@ -1907,7 +1897,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         for (let i = 0; i < turns.length; i++) {
             const turn = turns[i];
             if (!turn.element?.isConnected) continue;
-            const rect = turn.element.getBoundingClientRect();
+            const rect = getTurnRect(turn);
 
             if (rect.top <= viewportAnchor && rect.bottom > viewportAnchor) {
                 return i;
@@ -2637,13 +2627,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                     blocks.forEach((block) => {
                         if (block.prompt) {
                             const promptText = block.prompt.element
-                                ? serializeNodeToMarkdown(block.prompt.element).replace(/\n{3,}/g, '\n\n').trim()
+                                ? serializeTurnToMarkdown(block.prompt).replace(/\n{3,}/g, '\n\n').trim()
                                 : block.prompt.text || '';
                             lines.push(`**User:** ${promptText}`, '');
                         }
                         if (block.answer) {
                             const answerText = block.answer.element
-                                ? serializeNodeToMarkdown(block.answer.element).replace(/\n{3,}/g, '\n\n').trim()
+                                ? serializeTurnToMarkdown(block.answer).replace(/\n{3,}/g, '\n\n').trim()
                                 : block.answer.text || '';
                             lines.push(`**Assistant:** ${answerText}`, '');
                         }

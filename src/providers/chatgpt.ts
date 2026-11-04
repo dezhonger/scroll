@@ -1,6 +1,7 @@
 import { Heading, HeadingPart, Provider, Turn } from '../types';
 import { serializeNodeToMarkdown } from '../lib/markdownUtil';
 import { inferChatGptOutlineLevels } from './chatgptHeadingLevels';
+import { findAssistantMessageStarts } from './chatgptMessageBoundaries';
 
 const getHeadingParts = (node: Node): HeadingPart[] => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -36,6 +37,10 @@ const getHeadingParts = (node: Node): HeadingPart[] => {
 
 const getHeadings = (content: HTMLElement): Heading[] => {
     const elements = Array.from(content.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
+    return getHeadingsFromElements(elements);
+};
+
+const getHeadingsFromElements = (elements: HTMLElement[]): Heading[] => {
     const headingParts = elements.map(getHeadingParts);
     const headingTexts = headingParts.map((parts) => parts.map((part) => part.value).join('').replace(/\s+/g, ' ').trim());
     const outlineLevels = inferChatGptOutlineLevels(elements.map((heading, index) => ({
@@ -55,6 +60,13 @@ const getHeadings = (content: HTMLElement): Heading[] => {
         };
     });
 };
+
+const getHeadingsFromNodes = (nodes: HTMLElement[]): Heading[] => getHeadingsFromElements(
+    nodes.flatMap((node) => [
+        ...(node.matches('h1, h2, h3, h4, h5, h6') ? [node] : []),
+        ...Array.from(node.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')),
+    ])
+);
 
 const getCurrentTurns = (container: HTMLElement): Turn[] => {
     const turnElements = Array.from(container.querySelectorAll<HTMLElement>('[data-turn-key]'));
@@ -81,7 +93,7 @@ const getCurrentTurns = (container: HTMLElement): Turn[] => {
                 const text = (element.innerText || '').trim();
                 const id = `gpt-${turnKey}-${unitKey || unitIndex}`;
 
-                return [{
+                const baseTurn: Turn = {
                     id,
                     turnId: id,
                     role,
@@ -92,7 +104,42 @@ const getCurrentTurns = (container: HTMLElement): Turn[] => {
                         ? unit.querySelector<HTMLElement>(':scope > button span.truncate')?.innerText.trim() || undefined
                         : undefined,
                     timeLabel: role === 'assistant' ? timeLabel : undefined,
-                }];
+                };
+                if (role !== 'assistant' || !content || !baseTurn.contextLabel) return [baseTurn];
+
+                const children = Array.from(content.children) as HTMLElement[];
+                const messageIds = (unit.getAttribute('data-chatgpt-search-message-ids') || '')
+                    .split(/\s+/).filter(Boolean);
+                const starts = findAssistantMessageStarts(children.map((child) => ({
+                    sourceMessageId: child.getAttribute('data-dil-source-message-id'),
+                    tagName: child.tagName,
+                    text: child.textContent || '',
+                })), messageIds);
+                if (starts.length === 1) return [baseTurn];
+
+                return starts.map((start, segmentIndex): Turn => {
+                    const end = starts[segmentIndex + 1] ?? children.length;
+                    const nodes = children.slice(start, end);
+                    const range = content.ownerDocument.createRange();
+                    range.setStartBefore(nodes[0]);
+                    range.setEndAfter(nodes[nodes.length - 1]);
+                    const headings = getHeadingsFromNodes(nodes);
+                    if (segmentIndex > 0 && nodes[0].tagName === 'H1' && headings[0]?.element === nodes[0]) {
+                        headings[0].outlineLevel = 0;
+                    }
+                    const segmentId = `${id}-message-${segmentIndex}`;
+                    return {
+                        ...baseTurn,
+                        id: segmentId,
+                        turnId: segmentId,
+                        element: nodes[0],
+                        contentRange: range,
+                        text: nodes.map((node) => node.innerText || node.textContent || '').join('\n\n').trim(),
+                        headings,
+                        contextLabel: segmentIndex === 0 ? undefined : baseTurn.contextLabel,
+                        timeLabel: segmentIndex === 0 ? baseTurn.timeLabel : undefined,
+                    };
+                });
             });
     });
 };
