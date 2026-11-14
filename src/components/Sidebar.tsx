@@ -1223,6 +1223,17 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const latestBlock = latestBlockIndex >= 0 ? blocks[latestBlockIndex] : undefined;
 
+    const navigateToOutlineTarget = useCallback((target: HTMLElement, blockKey: string) => {
+        if (!target.isConnected) return;
+        // Ignore scroll tracking while the 700 ms page animation crosses other
+        // turns. Otherwise Latest can switch away from the clicked section.
+        manualSidebarNavigationUntilRef.current = Date.now() + 1200;
+        if (viewLevel === 3) {
+            setSelectedLatestBlockKey(blockKey === blocks[blocks.length - 1]?.key ? null : blockKey);
+        }
+        scrollToElement(target);
+    }, [blocks, viewLevel]);
+
     const findBlockIndexForTurn = useCallback((turn: Turn) => {
         const turnKey = turn.turnId || turn.id;
         return blocks.findIndex((block) => {
@@ -1390,7 +1401,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const headingNavigationItems = useMemo(() => focusableItems.flatMap((item, focusIndex) => (
         item.kind === 'heading' && item.heading
-            ? [{ heading: item.heading, focusIndex }]
+            ? [{ heading: item.heading, blockKey: item.block.key, focusIndex }]
             : []
     )), [focusableItems]);
 
@@ -1407,12 +1418,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         const target = headingNavigationItems[nextIndex];
         if (!target?.heading.element?.isConnected) return;
 
-        manualSidebarNavigationUntilRef.current = Date.now() + 900;
         shouldPreviewFollowingHeadingsRef.current = true;
         setFocusedIndex(target.focusIndex);
         hideOverflowTooltip();
-        scrollToElement(target.heading.element);
-    }, [currentHeadingNavigationIndex, headingNavigationItems, hideOverflowTooltip]);
+        navigateToOutlineTarget(target.heading.element, target.blockKey);
+    }, [currentHeadingNavigationIndex, headingNavigationItems, hideOverflowTooltip, navigateToOutlineTarget]);
 
     const getVisibleFocusKey = useCallback((block: Block, visibleTurn: Turn) => {
         if (viewLevel === 1) return block.key;
@@ -2330,10 +2340,10 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 const item = focusableItems[focusedIndex];
                 if (item) {
                     if (item.kind === 'heading' && item.heading?.element) {
-                        scrollToElement(item.heading.element);
+                        navigateToOutlineTarget(item.heading.element, item.block.key);
                     } else if (item.kind === 'block') {
                         const target = item.block.prompt?.element || item.block.answer?.element;
-                        if (target) scrollToElement(target);
+                        if (target) navigateToOutlineTarget(target, item.block.key);
                     } else if (item.kind === 'command' && item.command === 'export') {
                         startExport();
                         if (providerName === 'chatgpt') {
@@ -2349,7 +2359,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
         window.addEventListener('keydown', handler, true); // Capture phase to beat Claude
         return () => window.removeEventListener('keydown', handler, true);
-    }, [copyWithMarkdown, focusableItems, focusedIndex, getTurnCopyText, isOpen, isPaused, moveSidebarFocus, onToggle, providerName, showHelp, showToast, startExport]);
+    }, [copyWithMarkdown, focusableItems, focusedIndex, getTurnCopyText, isOpen, isPaused, moveSidebarFocus, navigateToOutlineTarget, onToggle, providerName, showHelp, showToast, startExport]);
 
     // Capture-phase contextmenu handler (beats host page interception)
     const filteredBlocksRef = useRef(filteredBlocks);
@@ -3130,7 +3140,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                         if (contextMenu) return;
                                         if (focusIdx >= 0) setFocusedIndex(focusIdx);
                                         const target = block.prompt?.element || block.answer?.element;
-                                        if (target) scrollToElement(target);
+                                        if (target) navigateToOutlineTarget(target, block.key);
                                     }}
                                     onContextMenu={(e) => {
                                         e.preventDefault();
@@ -3177,7 +3187,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
-                                                                    scrollToElement(heading.element);
+                                                                    navigateToOutlineTarget(heading.element, block.key);
                                                                 }}
                                                                 onCopy={(e) => {
                                                                     e.preventDefault();
@@ -3208,7 +3218,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                                                 e.stopPropagation();
                                                                 const headingFocusIndex = focusIndexByKey.get(`${block.key}-heading-0`) ?? -1;
                                                                 if (headingFocusIndex >= 0) setFocusedIndex(headingFocusIndex);
-                                                                scrollToElement(block.answer!.element);
+                                                                navigateToOutlineTarget(block.answer!.element, block.key);
                                                             }}
                                                         >
                                                             {snippet(block.answer.text, 80)}
