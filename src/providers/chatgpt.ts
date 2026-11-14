@@ -1,7 +1,7 @@
 import { Heading, HeadingPart, Provider, Turn } from '../types';
 import { serializeNodeToMarkdown } from '../lib/markdownUtil';
 import { inferChatGptOutlineLevels } from './chatgptHeadingLevels';
-import { findAssistantMessageStarts } from './chatgptMessageBoundaries';
+import { findAssistantMessageStarts, getDatedTitleDate } from './chatgptMessageBoundaries';
 
 const getHeadingParts = (node: Node): HeadingPart[] => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -40,15 +40,23 @@ const getHeadings = (content: HTMLElement): Heading[] => {
     return getHeadingsFromElements(elements);
 };
 
+const isOutlineHeading = (heading: HTMLElement): boolean => {
+    const response = heading.closest<HTMLElement>('[data-dil-response]');
+    // DIL uses heading tags for values inside cards. Its document headings are
+    // direct children of the response root; nested headings belong to layouts.
+    return !response || heading.parentElement === response;
+};
+
 const getHeadingsFromElements = (elements: HTMLElement[]): Heading[] => {
-    const headingParts = elements.map(getHeadingParts);
+    const outlineElements = elements.filter(isOutlineHeading);
+    const headingParts = outlineElements.map(getHeadingParts);
     const headingTexts = headingParts.map((parts) => parts.map((part) => part.value).join('').replace(/\s+/g, ' ').trim());
-    const outlineLevels = inferChatGptOutlineLevels(elements.map((heading, index) => ({
+    const outlineLevels = inferChatGptOutlineLevels(outlineElements.map((heading, index) => ({
         text: headingTexts[index],
         tagName: heading.tagName,
     })));
 
-    return elements.map((heading, index) => {
+    return outlineElements.map((heading, index) => {
         const innerText = headingTexts[index];
         return {
             innerText: innerText || `Section ${index + 1}`,
@@ -61,11 +69,9 @@ const getHeadingsFromElements = (elements: HTMLElement[]): Heading[] => {
     });
 };
 
-const getHeadingsFromNodes = (nodes: HTMLElement[]): Heading[] => getHeadingsFromElements(
-    nodes.flatMap((node) => [
-        ...(node.matches('h1, h2, h3, h4, h5, h6') ? [node] : []),
-        ...Array.from(node.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')),
-    ])
+const getHeadingsFromRange = (content: HTMLElement, range: Range): Heading[] => getHeadingsFromElements(
+    Array.from(content.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))
+        .filter((heading) => range.intersectsNode(heading))
 );
 
 const getCurrentTurns = (container: HTMLElement): Turn[] => {
@@ -115,26 +121,45 @@ const getCurrentTurns = (container: HTMLElement): Turn[] => {
                     tagName: child.tagName,
                     text: child.textContent || '',
                 })), messageIds);
-                if (starts.length === 1) return [baseTurn];
+                const boundaries: HTMLElement[] = starts.slice(1).map((index) => children[index]);
+                const datedHeadings = Array.from(content.querySelectorAll<HTMLElement>('h1'))
+                    .filter((heading) => getDatedTitleDate(heading.textContent || ''));
+                let lastDate: string | null = null;
+                for (const heading of datedHeadings) {
+                    const date = getDatedTitleDate(heading.textContent || '');
+                    if (!date || (lastDate && date <= lastDate)) continue;
+                    lastDate = date;
+                    const before = content.ownerDocument.createRange();
+                    before.setStart(content, 0);
+                    before.setEndBefore(heading);
+                    if (before.toString().trim().length >= 30 && !boundaries.some((node) => node === heading || node.contains(heading))) {
+                        boundaries.push(heading);
+                    }
+                }
+                if (!boundaries.length || !children.length) return [baseTurn];
+                boundaries.sort((left, right) => left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+                const segmentStarts = [children[0], ...boundaries];
 
-                return starts.map((start, segmentIndex): Turn => {
-                    const end = starts[segmentIndex + 1] ?? children.length;
-                    const nodes = children.slice(start, end);
+                return segmentStarts.map((start, segmentIndex): Turn => {
                     const range = content.ownerDocument.createRange();
-                    range.setStartBefore(nodes[0]);
-                    range.setEndAfter(nodes[nodes.length - 1]);
-                    const headings = getHeadingsFromNodes(nodes);
-                    if (segmentIndex > 0 && nodes[0].tagName === 'H1' && headings[0]?.element === nodes[0]) {
+                    range.setStartBefore(start);
+                    const next = segmentStarts[segmentIndex + 1];
+                    if (next) range.setEndBefore(next);
+                    else range.setEnd(content, content.childNodes.length);
+                    const headings = getHeadingsFromRange(content, range);
+                    if (segmentIndex > 0 && start.tagName === 'H1' && headings[0]?.element === start) {
                         headings[0].outlineLevel = 0;
                     }
                     const segmentId = `${id}-message-${segmentIndex}`;
+                    const wrapper = content.ownerDocument.createElement('div');
+                    wrapper.appendChild(range.cloneContents());
                     return {
                         ...baseTurn,
                         id: segmentId,
                         turnId: segmentId,
-                        element: nodes[0],
+                        element: start,
                         contentRange: range,
-                        text: nodes.map((node) => node.innerText || node.textContent || '').join('\n\n').trim(),
+                        text: (wrapper.innerText || wrapper.textContent || '').trim(),
                         headings,
                         contextLabel: segmentIndex === 0 ? undefined : baseTurn.contextLabel,
                         timeLabel: segmentIndex === 0 ? baseTurn.timeLabel : undefined,
