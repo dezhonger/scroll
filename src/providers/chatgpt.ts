@@ -122,8 +122,8 @@ const getCurrentTurns = (container: HTMLElement): Turn[] => {
                     text: child.textContent || '',
                 })), messageIds);
                 const boundaries: HTMLElement[] = starts.slice(1).map((index) => children[index]);
-                const datedHeadings = Array.from(content.querySelectorAll<HTMLElement>('h1'))
-                    .filter((heading) => getDatedTitleDate(heading.textContent || ''));
+                const datedHeadings = Array.from(content.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))
+                    .filter((heading) => isOutlineHeading(heading) && getDatedTitleDate(heading.textContent || ''));
                 let lastDate: string | null = null;
                 for (const heading of datedHeadings) {
                     const date = getDatedTitleDate(heading.textContent || '');
@@ -147,7 +147,7 @@ const getCurrentTurns = (container: HTMLElement): Turn[] => {
                     if (next) range.setEndBefore(next);
                     else range.setEnd(content, content.childNodes.length);
                     const headings = getHeadingsFromRange(content, range);
-                    if (segmentIndex > 0 && start.tagName === 'H1' && headings[0]?.element === start) {
+                    if (segmentIndex > 0 && headings[0] && getDatedTitleDate(headings[0].innerText)) {
                         headings[0].outlineLevel = 0;
                     }
                     const segmentId = `${id}-message-${segmentIndex}`;
@@ -159,6 +159,7 @@ const getCurrentTurns = (container: HTMLElement): Turn[] => {
                         turnId: segmentId,
                         element: start,
                         contentRange: range,
+                        segmentIndex,
                         text: (wrapper.innerText || wrapper.textContent || '').trim(),
                         headings,
                         contextLabel: segmentIndex === 0 ? undefined : baseTurn.contextLabel,

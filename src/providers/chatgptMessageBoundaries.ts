@@ -27,10 +27,22 @@ export const findAssistantMessageStarts = (
     const starts = [0];
     if (wrappedPreviousMessage && distinctMessageCount > 1) starts.push(1);
 
-    let lastDate = children[0].tagName === 'H1' ? getDatedTitleDate(children[0].text) : null;
+    // ChatGPT can also split one report across multiple DIL response roots,
+    // each with a different message ID. An ID change alone is not a new turn.
+    let previousSourceMessageId = children[0].sourceMessageId;
+    for (let index = 1; index < children.length; index += 1) {
+        const sourceMessageId = children[index].sourceMessageId;
+        if (sourceMessageId && previousSourceMessageId && sourceMessageId !== previousSourceMessageId
+            && getDatedTitleDate(children[index].text)) {
+            starts.push(index);
+        }
+        if (sourceMessageId) previousSourceMessageId = sourceMessageId;
+    }
+
+    let lastDate = /^H[1-6]$/.test(children[0].tagName) ? getDatedTitleDate(children[0].text) : null;
     for (let index = 1; index < children.length; index += 1) {
         const child = children[index];
-        const date = child.tagName === 'H1' ? getDatedTitleDate(child.text) : null;
+        const date = /^H[1-6]$/.test(child.tagName) ? getDatedTitleDate(child.text) : null;
         if (date && (!lastDate || date > lastDate) && children[0].text.trim().length >= 30) {
             if (!starts.includes(index)) starts.push(index);
             lastDate = date;

@@ -17,6 +17,7 @@ export interface Turn {
     role: 'user' | 'assistant';
     element: HTMLElement;
     contentRange?: Range; // A ChatGPT unit can contain several assistant messages.
+    segmentIndex?: number; // Zero-based assistant message within a shared unit.
     text: string;
     headings: Heading[];
     contextLabel?: string; // Provider context, e.g. a scheduled task name

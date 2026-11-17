@@ -397,6 +397,15 @@ const isScrollable = (el: HTMLElement | null) => {
 };
 
 const findScrollable = (start: HTMLElement | null): HTMLElement | null => {
+    // The ChatGPT provider may select <main>, while the actual transcript
+    // scroller is a descendant of it. Follow a mounted turn back to its
+    // nearest scrolling ancestor before falling back to document scrolling.
+    const mountedTurn = start?.querySelector<HTMLElement>('[data-turn-key]');
+    let turnAncestor = mountedTurn?.parentElement || null;
+    while (turnAncestor && start?.contains(turnAncestor)) {
+        if (isScrollable(turnAncestor)) return turnAncestor;
+        turnAncestor = turnAncestor.parentElement;
+    }
     let current: HTMLElement | null = start;
     while (current) {
         if (isScrollable(current)) return current;
@@ -405,6 +414,27 @@ const findScrollable = (start: HTMLElement | null): HTMLElement | null => {
     }
     const docEl = document.scrollingElement as HTMLElement | null;
     return docEl || document.documentElement || document.body;
+};
+
+const VIRTUAL_TURN_EDGE_SPACE = 240;
+
+const getVirtualTurnSpace = (element: HTMLElement | null | undefined, container: HTMLElement | null) => {
+    const turn = element?.closest<HTMLElement>('[data-turn-key]');
+    const wrapper = turn?.parentElement;
+    const scrollElement = findScrollable(container);
+    if (!wrapper || !scrollElement || !isScrollable(scrollElement)) return null;
+
+    const scrollRect = scrollElement.getBoundingClientRect();
+    const itemRect = wrapper.getBoundingClientRect();
+    const itemStart = scrollElement.scrollTop + itemRect.top - scrollRect.top;
+    const itemEnd = scrollElement.scrollTop + itemRect.bottom - scrollRect.top;
+    return {
+        scrollElement,
+        itemStart,
+        itemEnd,
+        before: Math.max(0, itemStart),
+        after: Math.max(0, scrollElement.scrollHeight - itemEnd),
+    };
 };
 
 const getLineClamp = () => {
@@ -571,6 +601,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const [viewLevel, setViewLevel] = useState<1 | 2 | 3>(3); // 1=Prompts, 2=All, 3=Latest
     const [search, setSearch] = useState('');
     const [selectedLatestBlockKey, setSelectedLatestBlockKey] = useState<string | null>(null);
+    const [virtualTurnSpace, setVirtualTurnSpace] = useState({ previous: false, next: false });
     const [overflowTooltip, setOverflowTooltip] = useState<OverflowTooltip | null>(null);
     const [progress, setProgress] = useState(0);
     const [headingDepth, setHeadingDepth] = useState<HeadingDepth>(4);
@@ -644,6 +675,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const suppressLatestScrollSyncRef = useRef(false);
     const latestScrollSyncTimerRef = useRef<number | null>(null);
     const manualSidebarNavigationUntilRef = useRef(0);
+    const pendingVirtualNavigationRef = useRef<{ direction: -1 | 1; fromKey: string; startedAt: number } | null>(null);
     const previousViewLevelRef = useRef(viewLevel);
     const previousNewestBlockKeyRef = useRef<string | null>(null);
     const lastHeadingNavigationContextRef = useRef<string | null>(null);
@@ -1223,16 +1255,60 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const latestBlock = latestBlockIndex >= 0 ? blocks[latestBlockIndex] : undefined;
 
+    const resolveBlockTarget = useCallback((block: Block | undefined): HTMLElement | null => {
+        const turn = block?.prompt || block?.answer;
+        if (!turn) return null;
+        if (turn.element.isConnected && turn.element.getBoundingClientRect().height > 0) return turn.element;
+        if (providerName !== 'chatgpt' || !container) return null;
+        // A block can outlive the DOM node that ChatGPT's virtualizer mounted
+        // for it. Reparse the mounted turn by its stable provider ID.
+        return chatgpt.getTurns(container).find((fresh) => fresh.id === turn.id
+            && fresh.element.getBoundingClientRect().height > 0)?.element || null;
+    }, [container, providerName]);
+
+    const getBlockScrollTarget = useCallback((block: Block | undefined, target: HTMLElement): HTMLElement => {
+        const turn = block?.prompt || block?.answer;
+        // Use the virtual item's stable frame for its first message. Later
+        // messages in the same item must keep their own start position.
+        return providerName === 'chatgpt' && !turn?.segmentIndex
+            ? target.closest<HTMLElement>('[data-turn-key]')?.parentElement || target
+            : target;
+    }, [providerName]);
+
+    useEffect(() => {
+        if (providerName !== 'chatgpt' || !latestBlock) {
+            setVirtualTurnSpace({ previous: false, next: false });
+            return;
+        }
+        const target = resolveBlockTarget(latestBlock);
+        const scrollElement = findScrollable(container);
+        const update = () => {
+            const space = getVirtualTurnSpace(target, container);
+            const next = {
+                previous: (space?.before || 0) > VIRTUAL_TURN_EDGE_SPACE,
+                next: (space?.after || 0) > VIRTUAL_TURN_EDGE_SPACE,
+            };
+            setVirtualTurnSpace((current) => current.previous === next.previous && current.next === next.next
+                ? current : next);
+        };
+        update();
+        scrollElement?.addEventListener('scroll', update, { passive: true });
+        return () => scrollElement?.removeEventListener('scroll', update);
+    }, [container, latestBlock, providerName, resolveBlockTarget, turns]);
+
     const navigateToOutlineTarget = useCallback((target: HTMLElement, blockKey: string) => {
         if (!target.isConnected) return;
-        // Ignore scroll tracking while the 700 ms page animation crosses other
-        // turns. Otherwise Latest can switch away from the clicked section.
-        manualSidebarNavigationUntilRef.current = Date.now() + 1200;
+        // Ignore scroll tracking while a long jump crosses virtualized turns.
+        const isLongJump = Math.abs(target.getBoundingClientRect().top - 24) > window.innerHeight * 1.5;
+        manualSidebarNavigationUntilRef.current = Date.now() + (isLongJump ? 9000 : 1200);
         if (viewLevel === 3) {
-            setSelectedLatestBlockKey(blockKey === blocks[blocks.length - 1]?.key ? null : blockKey);
+            const isLastLoaded = blockKey === blocks[blocks.length - 1]?.key;
+            const hasUnloadedNext = providerName === 'chatgpt'
+                && (getVirtualTurnSpace(target, container)?.after || 0) > VIRTUAL_TURN_EDGE_SPACE;
+            setSelectedLatestBlockKey(isLastLoaded && !hasUnloadedNext ? null : blockKey);
         }
         scrollToElement(target);
-    }, [blocks, viewLevel]);
+    }, [blocks, container, providerName, viewLevel]);
 
     const findBlockIndexForTurn = useCallback((turn: Turn) => {
         const turnKey = turn.turnId || turn.id;
@@ -1244,19 +1320,23 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     }, [blocks]);
 
     const scrollLatestBlockIntoView = useCallback((block: Block | undefined) => {
-        const target = block?.prompt?.element || block?.answer?.element;
-        if (!target || !target.isConnected) return;
+        const target = resolveBlockTarget(block);
+        if (!target) return;
+
+        const scrollTarget = getBlockScrollTarget(block, target);
+
+        const isLongJump = Math.abs(scrollTarget.getBoundingClientRect().top - 24) > window.innerHeight * 1.5;
 
         suppressLatestScrollSyncRef.current = true;
         if (latestScrollSyncTimerRef.current !== null) {
             window.clearTimeout(latestScrollSyncTimerRef.current);
         }
-        target.scrollIntoView({ behavior: 'auto', block: 'start' });
+        scrollToElement(scrollTarget, { instant: true });
         latestScrollSyncTimerRef.current = window.setTimeout(() => {
             suppressLatestScrollSyncRef.current = false;
             latestScrollSyncTimerRef.current = null;
-        }, 500);
-    }, []);
+        }, isLongJump ? 9000 : 1400);
+    }, [getBlockScrollTarget, resolveBlockTarget]);
 
     useEffect(() => {
         const previousViewLevel = previousViewLevelRef.current;
@@ -1279,26 +1359,87 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             previousNewestBlockKey === null ||
             previousNewestBlockKey === newestBlockKey ||
             viewLevel !== 3 ||
+            Date.now() < manualSidebarNavigationUntilRef.current ||
             selectedLatestBlockKey !== null
         ) {
             return;
         }
 
+        // Virtualization changes the newest *mounted* block while reading an
+        // older part of a chat. Only follow it when the reader is already at
+        // the physical end of the transcript.
+        const scrollElement = findScrollable(container);
+        if (scrollElement && scrollElement.scrollHeight - scrollElement.clientHeight - scrollElement.scrollTop
+            > scrollElement.clientHeight * 0.5) return;
+
         scrollLatestBlockIntoView(newestBlock);
-    }, [blocks, scrollLatestBlockIntoView, selectedLatestBlockKey, viewLevel]);
+    }, [blocks, container, scrollLatestBlockIntoView, selectedLatestBlockKey, viewLevel]);
 
     const navigateLatest = useCallback((direction: -1 | 1) => {
         if (latestBlockIndex < 0) return;
         const nextIndex = clampNumber(latestBlockIndex + direction, 0, blocks.length - 1);
-        if (nextIndex === latestBlockIndex) return;
-
         const nextBlock = blocks[nextIndex];
-        setSelectedLatestBlockKey(nextIndex === blocks.length - 1 ? null : nextBlock.key);
+        const nextTarget = nextIndex !== latestBlockIndex ? resolveBlockTarget(nextBlock) : null;
+        if (nextIndex === latestBlockIndex || !nextTarget) {
+            if (providerName !== 'chatgpt' || !latestBlock) return;
+            const target = resolveBlockTarget(latestBlock);
+            const space = getVirtualTurnSpace(target, container);
+            if (!space || (nextIndex === latestBlockIndex
+                && (direction > 0 ? space.after : space.before) <= VIRTUAL_TURN_EDGE_SPACE)) return;
+
+            pendingVirtualNavigationRef.current = { direction, fromKey: latestBlock.key, startedAt: Date.now() };
+            manualSidebarNavigationUntilRef.current = Date.now() + 9000;
+            // Advance from the selected block, rather than the containing
+            // virtual item: one item can hold several scheduled responses.
+            const currentTurn = direction > 0
+                ? latestBlock.answer || latestBlock.prompt
+                : latestBlock.prompt || latestBlock.answer;
+            const blockRect = currentTurn ? getTurnRect(currentTurn) : null;
+            const scrollRect = space.scrollElement.getBoundingClientRect();
+            const nextScrollTop = direction > 0
+                ? space.scrollElement.scrollTop + (blockRect?.bottom || 0) - scrollRect.top - 80
+                : space.scrollElement.scrollTop + (blockRect?.top || 0) - scrollRect.top
+                    - space.scrollElement.clientHeight + 80;
+            space.scrollElement.scrollTop = Math.max(0, Math.min(
+                nextScrollTop,
+                space.scrollElement.scrollHeight - space.scrollElement.clientHeight
+            ));
+            return;
+        }
+
+        const isTrueLatest = nextIndex === blocks.length - 1
+            && (getVirtualTurnSpace(nextTarget, container)?.after || 0) <= VIRTUAL_TURN_EDGE_SPACE;
+        const isLongJump = Math.abs(nextTarget.getBoundingClientRect().top - 24) > window.innerHeight * 1.5;
+        manualSidebarNavigationUntilRef.current = Date.now() + (isLongJump ? 9000 : 1200);
+        setSelectedLatestBlockKey(isTrueLatest ? null : nextBlock.key);
         setFocusedIndex(0);
         hideOverflowTooltip();
 
         scrollLatestBlockIntoView(nextBlock);
-    }, [blocks, hideOverflowTooltip, latestBlockIndex, scrollLatestBlockIntoView]);
+    }, [blocks, container, hideOverflowTooltip, latestBlock, latestBlockIndex, providerName, resolveBlockTarget, scrollLatestBlockIntoView]);
+
+    useLayoutEffect(() => {
+        const pending = pendingVirtualNavigationRef.current;
+        if (!pending || viewLevel !== 3) return;
+        if (Date.now() - pending.startedAt > 9000) {
+            pendingVirtualNavigationRef.current = null;
+            return;
+        }
+        const fromIndex = blocks.findIndex((block) => block.key === pending.fromKey);
+        const candidate = fromIndex >= 0
+            ? blocks[fromIndex + pending.direction]
+            : (pending.direction > 0 ? blocks[0] : blocks[blocks.length - 1]);
+        if (!candidate || candidate.key === pending.fromKey) return;
+
+        const target = resolveBlockTarget(candidate);
+        if (!target) return;
+        pendingVirtualNavigationRef.current = null;
+        const isTrueLatest = pending.direction > 0 && candidate === blocks[blocks.length - 1]
+            && (getVirtualTurnSpace(target, container)?.after || 0) <= VIRTUAL_TURN_EDGE_SPACE;
+        setSelectedLatestBlockKey(isTrueLatest ? null : candidate.key);
+        setFocusedIndex(0);
+        scrollToElement(getBlockScrollTarget(candidate, target), { instant: true });
+    }, [blocks, container, getBlockScrollTarget, resolveBlockTarget, viewLevel]);
 
     const jumpToLatest = useCallback(() => {
         const newestBlock = blocks[blocks.length - 1];
@@ -1308,8 +1449,50 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         setFocusedIndex(0);
         hideOverflowTooltip();
 
+        if (providerName === 'chatgpt') {
+            const scrollElement = findScrollable(container);
+            if (scrollElement && isScrollable(scrollElement)) {
+                manualSidebarNavigationUntilRef.current = Date.now() + 9000;
+                const startedAt = performance.now();
+                let stableFrames = 0;
+                let sampleFrames = 0;
+                let stableTurnSamples = 0;
+                let lastMountedTurn: Turn | undefined;
+                const seekEnd = () => {
+                    if (!scrollElement.isConnected) return;
+                    const end = scrollElement.scrollHeight - scrollElement.clientHeight;
+                    if (end - scrollElement.scrollTop > 3) {
+                        scrollElement.scrollTop = end;
+                        stableFrames = 0;
+                    } else {
+                        stableFrames += 1;
+                    }
+                    sampleFrames += 1;
+                    if (sampleFrames % 5 === 0) {
+                        const currentLast = container ? chatgpt.getTurns(container).at(-1) : undefined;
+                        stableTurnSamples = currentLast?.id && currentLast.id === lastMountedTurn?.id
+                            ? stableTurnSamples + 1 : 0;
+                        lastMountedTurn = currentLast;
+                    }
+                    if ((stableFrames < 20 || stableTurnSamples < 6) && performance.now() - startedAt < 8000) {
+                        window.requestAnimationFrame(seekEnd);
+                        return;
+                    }
+                    const lastTurn = container ? chatgpt.getTurns(container).at(-1) : lastMountedTurn;
+                    if (lastTurn?.element.isConnected) {
+                        manualSidebarNavigationUntilRef.current = Date.now() + 9000;
+                        const target = lastTurn.segmentIndex
+                            ? lastTurn.element
+                            : lastTurn.element.closest<HTMLElement>('[data-turn-key]')?.parentElement || lastTurn.element;
+                        scrollToElement(target, { instant: true });
+                    }
+                };
+                seekEnd();
+                return;
+            }
+        }
         scrollLatestBlockIntoView(newestBlock);
-    }, [blocks, hideOverflowTooltip, scrollLatestBlockIntoView]);
+    }, [blocks, container, hideOverflowTooltip, providerName, scrollLatestBlockIntoView]);
 
     const getVisibleHeadingEntries = useCallback((block: Block) => (
         block.headings
@@ -1982,6 +2165,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     useLayoutEffect(() => {
         if (viewLevel !== 3 || !selectedLatestBlockKey || latestBlockIndex >= 0) return;
+        if (pendingVirtualNavigationRef.current || suppressLatestScrollSyncRef.current
+            || Date.now() < manualSidebarNavigationUntilRef.current) return;
         if (!syncLatestToVisibleTurn()) {
             setSelectedLatestBlockKey(null);
         }
@@ -1992,6 +2177,13 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
         const scrollEl = findScrollable(container);
         if (!scrollEl) return;
+
+        const resumeTracking = () => {
+            manualSidebarNavigationUntilRef.current = 0;
+            suppressLatestScrollSyncRef.current = false;
+        };
+        scrollEl.addEventListener('wheel', resumeTracking, { passive: true });
+        scrollEl.addEventListener('touchstart', resumeTracking, { passive: true });
 
         let ticking = false;
 
@@ -2026,7 +2218,11 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
         scrollEl.addEventListener('scroll', handleScroll, { passive: true });
         handleScroll();
-        return () => scrollEl.removeEventListener('scroll', handleScroll);
+        return () => {
+            scrollEl.removeEventListener('scroll', handleScroll);
+            scrollEl.removeEventListener('wheel', resumeTracking);
+            scrollEl.removeEventListener('touchstart', resumeTracking);
+        };
     }, [blocks, container, findBlockIndexForTurn, findVisibleTurnIndex, focusIndexByKey, getVisibleFocusKey, isOpen, isPaused, syncLatestToVisibleTurn, turns]);
 
     useEffect(() => {
@@ -2940,7 +3136,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     className="scroll-pro-latest-nav-btn"
                                     aria-label="Previous turn"
                                     title="Previous turn (X-1)"
-                                    disabled={latestBlockIndex <= 0}
+                                    disabled={latestBlockIndex <= 0 && !virtualTurnSpace.previous}
                                     onClick={() => navigateLatest(-1)}
                                 >
                                     <span aria-hidden="true">←</span>
@@ -2954,7 +3150,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     className="scroll-pro-latest-nav-btn"
                                     aria-label="Next turn"
                                     title="Next turn (X+1)"
-                                    disabled={latestBlockIndex < 0 || latestBlockIndex === blocks.length - 1}
+                                    disabled={latestBlockIndex < 0 || (latestBlockIndex === blocks.length - 1 && !virtualTurnSpace.next)}
                                     onClick={() => navigateLatest(1)}
                                 >
                                     <span>Next</span>
@@ -2965,7 +3161,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     className="scroll-pro-latest-nav-btn scroll-pro-latest-jump-btn"
                                     aria-label="Back to latest turn"
                                     title="Back to latest turn"
-                                    disabled={selectedLatestBlockKey === null}
+                                    disabled={selectedLatestBlockKey === null && !virtualTurnSpace.next}
                                     onClick={jumpToLatest}
                                 >
                                     Latest

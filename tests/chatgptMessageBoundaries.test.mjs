@@ -25,6 +25,23 @@ test('splits a scheduled answer appended after the original answer wrapper', () 
     ]), [0, 1]);
 });
 
+test('splits sibling DIL responses by their distinct message IDs', () => {
+    const children = [
+        child('DIV', 'Task is running and will continue at its scheduled time.', 'first-message'),
+        child('DIV', '2026-11-17 morning report with several sections.', 'second-message'),
+    ];
+    assert.deepEqual(findAssistantMessageStarts(children, [
+        'first-message', 'first-message', 'second-message',
+    ]), [0, 1]);
+});
+
+test('keeps undated response fragments together even when message IDs differ', () => {
+    assert.deepEqual(findAssistantMessageStarts([
+        child('DIV', '2026-11-14 afternoon report and its first section.', 'first-message'),
+        child('DIV', '二、【持续追踪】希尔伯特第十问题：同一份报告的后续章节。', 'continuation-message'),
+    ], ['first-message', 'continuation-message']), [0]);
+});
+
 test('separates later dated reports without splitting their chapters', () => {
     const children = [
         child('DIV', 'A1 response with enough context before the scheduled report', 'original-message'),
@@ -45,6 +62,13 @@ test('splits a dated report even when message IDs are unavailable', () => {
         child('H1', '2026-11-14 数学研究与学习雷达｜早间完整｜截至 03:04（UTC+8）'),
     ];
     assert.deepEqual(findAssistantMessageStarts(children, []), [0, 1]);
+});
+
+test('recognizes a dated H2 report boundary without message IDs', () => {
+    assert.deepEqual(findAssistantMessageStarts([
+        child('DIV', 'A long answer about keeping the scheduled task running.'),
+        child('H2', '2026-11-17 数学研究与学习雷达｜早间完整'),
+    ], []), [0, 1]);
 });
 
 test('keeps a standalone scheduled answer intact', () => {
