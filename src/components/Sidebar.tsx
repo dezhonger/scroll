@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEventHandler } from 'react';
 import { Heading, Turn } from '../types';
 import type { CapturedTurn, ExportBlock } from '../types/messages';
-import { scrollToElement } from '../lib/scroll';
+import { getScrollEnd, scrollToElement, startScrollNavigation } from '../lib/scroll';
 import { chatgpt } from '../providers/chatgpt';
 import { claude } from '../providers/claude';
 import { gemini } from '../providers/gemini';
@@ -417,6 +417,7 @@ const findScrollable = (start: HTMLElement | null): HTMLElement | null => {
 };
 
 const VIRTUAL_TURN_EDGE_SPACE = 240;
+const CHATGPT_NAVIGATION_TIMEOUT = 800;
 
 const getVirtualTurnSpace = (element: HTMLElement | null | undefined, container: HTMLElement | null) => {
     const turn = element?.closest<HTMLElement>('[data-turn-key]');
@@ -426,12 +427,12 @@ const getVirtualTurnSpace = (element: HTMLElement | null | undefined, container:
 
     const scrollRect = scrollElement.getBoundingClientRect();
     const itemRect = wrapper.getBoundingClientRect();
-    const itemStart = scrollElement.scrollTop + itemRect.top - scrollRect.top;
-    const itemEnd = scrollElement.scrollTop + itemRect.bottom - scrollRect.top;
+    const scrollRange = scrollElement.scrollHeight - scrollElement.clientHeight;
+    const offsetFromStart = scrollElement.scrollTop - getScrollEnd(scrollElement) + scrollRange;
+    const itemStart = offsetFromStart + itemRect.top - scrollRect.top;
+    const itemEnd = offsetFromStart + itemRect.bottom - scrollRect.top;
     return {
         scrollElement,
-        itemStart,
-        itemEnd,
         before: Math.max(0, itemStart),
         after: Math.max(0, scrollElement.scrollHeight - itemEnd),
     };
@@ -601,6 +602,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const [viewLevel, setViewLevel] = useState<1 | 2 | 3>(3); // 1=Prompts, 2=All, 3=Latest
     const [search, setSearch] = useState('');
     const [selectedLatestBlockKey, setSelectedLatestBlockKey] = useState<string | null>(null);
+    const [loadedBlockCount, setLoadedBlockCount] = useState(0);
     const [virtualTurnSpace, setVirtualTurnSpace] = useState({ previous: false, next: false });
     const [overflowTooltip, setOverflowTooltip] = useState<OverflowTooltip | null>(null);
     const [progress, setProgress] = useState(0);
@@ -675,7 +677,16 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
     const suppressLatestScrollSyncRef = useRef(false);
     const latestScrollSyncTimerRef = useRef<number | null>(null);
     const manualSidebarNavigationUntilRef = useRef(0);
-    const pendingVirtualNavigationRef = useRef<{ direction: -1 | 1; fromKey: string; startedAt: number } | null>(null);
+    const pendingVirtualNavigationRef = useRef<{
+        direction: -1 | 1;
+        fromKey: string;
+        navigation: AbortController;
+    } | null>(null);
+    const loadedBlocksRef = useRef({
+        path: '',
+        keys: new Set<string>(),
+        promptsByAnswer: new Map<string, string>(),
+    });
     const previousViewLevelRef = useRef(viewLevel);
     const previousNewestBlockKeyRef = useRef<string | null>(null);
     const lastHeadingNavigationContextRef = useRef<string | null>(null);
@@ -1247,6 +1258,32 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         return list;
     }, [getAssistantInitiatedTitle, turns]);
 
+    const chatPath = window.location.pathname;
+    useLayoutEffect(() => {
+        if (providerName !== 'chatgpt') return;
+        if (loadedBlocksRef.current.path !== chatPath) {
+            loadedBlocksRef.current = { path: chatPath, keys: new Set(), promptsByAnswer: new Map() };
+        }
+        const { keys, promptsByAnswer } = loadedBlocksRef.current;
+        const getKey = (turn: Turn) => {
+            const id = turn.turnId || turn.id;
+            return turn.segmentIndex === 0 ? id.replace(/-message-0$/, '') : id;
+        };
+        for (const { prompt, answer } of blocks) {
+            if (prompt && answer) {
+                const answerKey = getKey(answer);
+                promptsByAnswer.set(answerKey, getKey(prompt));
+                keys.delete(answerKey);
+            }
+            const turn = prompt || answer;
+            if (turn) {
+                const key = getKey(turn);
+                keys.add(promptsByAnswer.get(key) ?? key);
+            }
+        }
+        setLoadedBlockCount(keys.size);
+    }, [blocks, chatPath, providerName]);
+
     const latestBlockIndex = useMemo(() => {
         if (blocks.length === 0) return -1;
         if (!selectedLatestBlockKey) return blocks.length - 1;
@@ -1298,9 +1335,8 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     const navigateToOutlineTarget = useCallback((target: HTMLElement, blockKey: string) => {
         if (!target.isConnected) return;
-        // Ignore scroll tracking while a long jump crosses virtualized turns.
-        const isLongJump = Math.abs(target.getBoundingClientRect().top - 24) > window.innerHeight * 1.5;
-        manualSidebarNavigationUntilRef.current = Date.now() + (isLongJump ? 9000 : 1200);
+        pendingVirtualNavigationRef.current = null;
+        manualSidebarNavigationUntilRef.current = Date.now() + CHATGPT_NAVIGATION_TIMEOUT;
         if (viewLevel === 3) {
             const isLastLoaded = blockKey === blocks[blocks.length - 1]?.key;
             const hasUnloadedNext = providerName === 'chatgpt'
@@ -1325,8 +1361,6 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
         const scrollTarget = getBlockScrollTarget(block, target);
 
-        const isLongJump = Math.abs(scrollTarget.getBoundingClientRect().top - 24) > window.innerHeight * 1.5;
-
         suppressLatestScrollSyncRef.current = true;
         if (latestScrollSyncTimerRef.current !== null) {
             window.clearTimeout(latestScrollSyncTimerRef.current);
@@ -1335,7 +1369,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         latestScrollSyncTimerRef.current = window.setTimeout(() => {
             suppressLatestScrollSyncRef.current = false;
             latestScrollSyncTimerRef.current = null;
-        }, isLongJump ? 9000 : 1400);
+        }, CHATGPT_NAVIGATION_TIMEOUT);
     }, [getBlockScrollTarget, resolveBlockTarget]);
 
     useEffect(() => {
@@ -1359,21 +1393,19 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             previousNewestBlockKey === null ||
             previousNewestBlockKey === newestBlockKey ||
             viewLevel !== 3 ||
+            providerName === 'chatgpt' ||
             Date.now() < manualSidebarNavigationUntilRef.current ||
             selectedLatestBlockKey !== null
         ) {
             return;
         }
 
-        // Virtualization changes the newest *mounted* block while reading an
-        // older part of a chat. Only follow it when the reader is already at
-        // the physical end of the transcript.
         const scrollElement = findScrollable(container);
         if (scrollElement && scrollElement.scrollHeight - scrollElement.clientHeight - scrollElement.scrollTop
             > scrollElement.clientHeight * 0.5) return;
 
         scrollLatestBlockIntoView(newestBlock);
-    }, [blocks, container, scrollLatestBlockIntoView, selectedLatestBlockKey, viewLevel]);
+    }, [blocks, container, providerName, scrollLatestBlockIntoView, selectedLatestBlockKey, viewLevel]);
 
     const navigateLatest = useCallback((direction: -1 | 1) => {
         if (latestBlockIndex < 0) return;
@@ -1387,8 +1419,17 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             if (!space || (nextIndex === latestBlockIndex
                 && (direction > 0 ? space.after : space.before) <= VIRTUAL_TURN_EDGE_SPACE)) return;
 
-            pendingVirtualNavigationRef.current = { direction, fromKey: latestBlock.key, startedAt: Date.now() };
-            manualSidebarNavigationUntilRef.current = Date.now() + 9000;
+            const navigation = startScrollNavigation();
+            pendingVirtualNavigationRef.current = { direction, fromKey: latestBlock.key, navigation };
+            navigation.signal.addEventListener('abort', () => {
+                if (pendingVirtualNavigationRef.current?.navigation === navigation) {
+                    pendingVirtualNavigationRef.current = null;
+                }
+            }, { once: true });
+            window.setTimeout(() => {
+                if (pendingVirtualNavigationRef.current?.navigation === navigation) navigation.abort();
+            }, CHATGPT_NAVIGATION_TIMEOUT);
+            manualSidebarNavigationUntilRef.current = Date.now() + CHATGPT_NAVIGATION_TIMEOUT;
             // Advance from the selected block, rather than the containing
             // virtual item: one item can hold several scheduled responses.
             const currentTurn = direction > 0
@@ -1400,17 +1441,14 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                 ? space.scrollElement.scrollTop + (blockRect?.bottom || 0) - scrollRect.top - 80
                 : space.scrollElement.scrollTop + (blockRect?.top || 0) - scrollRect.top
                     - space.scrollElement.clientHeight + 80;
-            space.scrollElement.scrollTop = Math.max(0, Math.min(
-                nextScrollTop,
-                space.scrollElement.scrollHeight - space.scrollElement.clientHeight
-            ));
+            space.scrollElement.scrollTo({ top: nextScrollTop, behavior: 'instant' });
             return;
         }
 
         const isTrueLatest = nextIndex === blocks.length - 1
             && (getVirtualTurnSpace(nextTarget, container)?.after || 0) <= VIRTUAL_TURN_EDGE_SPACE;
-        const isLongJump = Math.abs(nextTarget.getBoundingClientRect().top - 24) > window.innerHeight * 1.5;
-        manualSidebarNavigationUntilRef.current = Date.now() + (isLongJump ? 9000 : 1200);
+        pendingVirtualNavigationRef.current = null;
+        manualSidebarNavigationUntilRef.current = Date.now() + CHATGPT_NAVIGATION_TIMEOUT;
         setSelectedLatestBlockKey(isTrueLatest ? null : nextBlock.key);
         setFocusedIndex(0);
         hideOverflowTooltip();
@@ -1420,11 +1458,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
     useLayoutEffect(() => {
         const pending = pendingVirtualNavigationRef.current;
-        if (!pending || viewLevel !== 3) return;
-        if (Date.now() - pending.startedAt > 9000) {
-            pendingVirtualNavigationRef.current = null;
-            return;
-        }
+        if (!pending || pending.navigation.signal.aborted || viewLevel !== 3) return;
         const fromIndex = blocks.findIndex((block) => block.key === pending.fromKey);
         const candidate = fromIndex >= 0
             ? blocks[fromIndex + pending.direction]
@@ -1438,7 +1472,7 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
             && (getVirtualTurnSpace(target, container)?.after || 0) <= VIRTUAL_TURN_EDGE_SPACE;
         setSelectedLatestBlockKey(isTrueLatest ? null : candidate.key);
         setFocusedIndex(0);
-        scrollToElement(getBlockScrollTarget(candidate, target), { instant: true });
+        scrollToElement(getBlockScrollTarget(candidate, target), { instant: true, navigation: pending.navigation });
     }, [blocks, container, getBlockScrollTarget, resolveBlockTarget, viewLevel]);
 
     const jumpToLatest = useCallback(() => {
@@ -1452,47 +1486,47 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
         if (providerName === 'chatgpt') {
             const scrollElement = findScrollable(container);
             if (scrollElement && isScrollable(scrollElement)) {
-                manualSidebarNavigationUntilRef.current = Date.now() + 9000;
+                const navigation = startScrollNavigation();
+                manualSidebarNavigationUntilRef.current = Date.now() + CHATGPT_NAVIGATION_TIMEOUT;
                 const startedAt = performance.now();
-                let stableFrames = 0;
-                let sampleFrames = 0;
-                let stableTurnSamples = 0;
-                let lastMountedTurn: Turn | undefined;
-                const seekEnd = () => {
-                    if (!scrollElement.isConnected) return;
-                    const end = scrollElement.scrollHeight - scrollElement.clientHeight;
-                    if (end - scrollElement.scrollTop > 3) {
-                        scrollElement.scrollTop = end;
-                        stableFrames = 0;
-                    } else {
-                        stableFrames += 1;
+                let end = getScrollEnd(scrollElement);
+                let lastLayoutChange = startedAt;
+                let corrections = 0;
+                scrollElement.scrollTo({ top: end, behavior: 'instant' });
+                const seekEnd = (now: number) => {
+                    if (navigation.signal.aborted) return;
+                    if (!scrollElement.isConnected || window.location.pathname !== chatPath) {
+                        navigation.abort();
+                        return;
                     }
-                    sampleFrames += 1;
-                    if (sampleFrames % 5 === 0) {
-                        const currentLast = container ? chatgpt.getTurns(container).at(-1) : undefined;
-                        stableTurnSamples = currentLast?.id && currentLast.id === lastMountedTurn?.id
-                            ? stableTurnSamples + 1 : 0;
-                        lastMountedTurn = currentLast;
+                    const currentEnd = getScrollEnd(scrollElement);
+                    if (Math.abs(end - currentEnd) > 2 && corrections < 2) {
+                        end = currentEnd;
+                        lastLayoutChange = now;
+                        corrections += 1;
+                        scrollElement.scrollTo({ top: end, behavior: 'instant' });
                     }
-                    if ((stableFrames < 20 || stableTurnSamples < 6) && performance.now() - startedAt < 8000) {
+                    if (now - startedAt < CHATGPT_NAVIGATION_TIMEOUT && now - lastLayoutChange < 200) {
                         window.requestAnimationFrame(seekEnd);
                         return;
                     }
-                    const lastTurn = container ? chatgpt.getTurns(container).at(-1) : lastMountedTurn;
-                    if (lastTurn?.element.isConnected) {
-                        manualSidebarNavigationUntilRef.current = Date.now() + 9000;
-                        const target = lastTurn.segmentIndex
-                            ? lastTurn.element
-                            : lastTurn.element.closest<HTMLElement>('[data-turn-key]')?.parentElement || lastTurn.element;
-                        scrollToElement(target, { instant: true });
+                    const lastTurn = container ? chatgpt.getTurns(container).at(-1) : undefined;
+                    if (!lastTurn?.element.isConnected) {
+                        navigation.abort();
+                        return;
                     }
+                    const target = lastTurn.segmentIndex
+                        ? lastTurn.element
+                        : lastTurn.element.closest<HTMLElement>('[data-turn-key]')?.parentElement || lastTurn.element;
+                    manualSidebarNavigationUntilRef.current = Date.now() + CHATGPT_NAVIGATION_TIMEOUT;
+                    scrollToElement(target, { instant: true, navigation });
                 };
-                seekEnd();
+                window.requestAnimationFrame(seekEnd);
                 return;
             }
         }
         scrollLatestBlockIntoView(newestBlock);
-    }, [blocks, container, hideOverflowTooltip, providerName, scrollLatestBlockIntoView]);
+    }, [blocks, chatPath, container, hideOverflowTooltip, providerName, scrollLatestBlockIntoView]);
 
     const getVisibleHeadingEntries = useCallback((block: Block) => (
         block.headings
@@ -2636,9 +2670,17 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
 
             const behavior = userInteractionRef.current || isSmoothPursuit.current ? 'smooth' : 'auto';
 
-            const block = isSmoothPursuit.current ? 'center' : 'nearest';
-
-            el.scrollIntoView({ behavior, block });
+            const list = sidebarListRef.current;
+            if (list) {
+                const itemRect = el.getBoundingClientRect();
+                const listRect = list.getBoundingClientRect();
+                const top = itemRect.top - listRect.top;
+                const bottom = itemRect.bottom - listRect.bottom;
+                const delta = isSmoothPursuit.current
+                    ? (top + bottom) / 2
+                    : top < 0 ? top : Math.max(0, bottom);
+                if (delta) list.scrollTo({ top: list.scrollTop + delta, behavior });
+            }
 
             if (userInteractionRef.current) {
                 el.focus({ preventScroll: true });
@@ -3143,7 +3185,17 @@ export default function Sidebar({ turns, providerName, container, isOpen, isPaus
                                     <span>Previous</span>
                                 </button>
                                 <span className="scroll-pro-latest-position" aria-live="polite">
-                                    {latestBlockIndex + 1} / {blocks.length} loaded
+                                    {providerName === 'chatgpt' ? (
+                                        <>
+                                            <span title="Distinct turns loaded in this chat">{loadedBlockCount} loaded</span>
+                                            <br />
+                                            <small title="Position among currently mounted turns">
+                                                {latestBlockIndex + 1} / {blocks.length} mounted
+                                            </small>
+                                        </>
+                                    ) : (
+                                        `${latestBlockIndex + 1} / ${blocks.length} loaded`
+                                    )}
                                 </span>
                                 <button
                                     type="button"
